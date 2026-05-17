@@ -1,0 +1,52 @@
+{% extends "admin/_layout.html" %}
+{% set active = 'categories' %}
+{% block title %}Admin — Categories{% endblock %}
+{% block page_title %}Categories{% endblock %}
+
+{% block admin_body %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+  <!-- Add new -->
+  <aside>
+    <form method="post" action="{{ url_for('admin_categories') }}" class="bg-white rounded-2xl border-2 border-black p-5 space-y-3 lg:sticky lg:top-24">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <h2 class="text-base font-extrabold uppercase tracking-wider">Add category</h2>
+      <div>
+        <label class="label">Name</label>
+        <input type="text" name="name" required class="input w-full">
+      </div>
+      <div>
+        <label class="label">Description (optional)</label>
+        <textarea name="description" rows="3" class="input w-full"></textarea>
+      </div>
+      <button type="submit" class="btn-fuchsia rounded-full w-full py-2.5 font-extrabold uppercase tracking-wider text-sm border-2 border-black shadow-[4px_4px_0_#000]">
+        Add category
+      </button>
+      <p class="text-[11px] text-gray-500">The slug is generated automatically from the name.</p>
+    </form>
+  </aside>
+
+  <!-- List -->
+  <div class="lg:col-span-2">
+    <div class="bg-white rounded-2xl border-2 border-black p-5">
+      <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">All categories ({{ categories|length }})</h2>
+      <ul class="divide-y-2 divide-dashed divide-gray-200">
+        {% for c in categories %}
+        <li class="py-3 flex items-center gap-4">
+          <div class="w-10 h-10 rounded-lg border-2 border-black bg-[var(--lime)] flex items-center justify-center font-extrabold">
+            {{ c['name'][:1] | upper }}
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="font-bold">{{ c['name'] }}</p>
+            <p class="text-[11px] text-gray-500 font-mono">/{{ c['slug'] }}</p>
+            {% if c['description'] %}<p class="text-xs text-gray-600 mt-0.5 line-clamp-1">{{ c['description'] }}</p>{% endif %}
+          </div>
+          <span class="text-xs text-gray-500">Order: {{ c['sort_order'] or 0 }}</span>
+        </li>
+        {% else %}
+        <li class="py-4 text-center text-gray-500 text-sm">No categories yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Wellness Hub — KCBlendz{% endblock %}
+
+{% block content %}
+<section class="bg-[var(--dark)] text-white border-b-2 border-black">
+  <div class="max-w-7xl mx-auto px-4 py-12 md:py-16">
+    <p class="text-[var(--lime)] uppercase tracking-[0.3em] text-xs font-extrabold mb-2">The Wellness Hub</p>
+    <h1 class="text-4xl md:text-6xl font-extrabold leading-tight max-w-2xl">Real food, real science, real glow.</h1>
+    <p class="text-gray-300 mt-4 max-w-xl">Recipes, ingredient deep-dives, and wellness rituals from our team. No fads — just what actually works.</p>
+  </div>
+</section>
+
+<section class="max-w-7xl mx-auto px-4 py-10">
+  {% if posts %}
+    <!-- Featured -->
+    {% set hero = posts[0] %}
+    <a href="{{ url_for('wellness_post', slug=hero['slug']) }}" class="card-market block bg-white rounded-2xl border-2 border-black overflow-hidden mb-8 grid grid-cols-1 md:grid-cols-2 min-h-[280px]">
+      <div class="aspect-video md:aspect-auto bg-gray-200">
+        <img src="{{ hero['cover_url'] }}" alt="{{ hero['title'] }}" class="w-full h-full object-cover">
+      </div>
+      <div class="p-6 md:p-8 flex flex-col justify-center">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="badge-square bg-[var(--fuchsia)] text-white">Featured</span>
+          <span class="badge-square bg-[var(--lime)] text-black">{{ hero['category'] }}</span>
+        </div>
+        <h2 class="text-2xl md:text-3xl font-extrabold leading-tight mb-3">{{ hero['title'] }}</h2>
+        <p class="text-gray-600 text-sm mb-4 line-clamp-3">{{ hero['subtitle'] }}</p>
+        <p class="text-xs uppercase tracking-widest font-bold text-gray-500">{{ hero['author'] }} · {{ hero['read_minutes'] }} min read</p>
+      </div>
+    </a>
+
+    <!-- Grid -->
+    {% if posts|length > 1 %}
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      {% for p in posts[1:] %}
+      <a href="{{ url_for('wellness_post', slug=p['slug']) }}" class="card-market block bg-white rounded-2xl border-2 border-black overflow-hidden">
+        <div class="aspect-video bg-gray-200">
+          <img src="{{ p['cover_url'] }}" alt="{{ p['title'] }}" class="w-full h-full object-cover">
+        </div>
+        <div class="p-4">
+          <span class="badge-square bg-[var(--lime)] text-black mb-2">{{ p['category'] }}</span>
+          <h3 class="font-extrabold text-base leading-snug mb-2 line-clamp-2">{{ p['title'] }}</h3>
+          {% if p['subtitle'] %}<p class="text-xs text-gray-600 line-clamp-2 mb-2">{{ p['subtitle'] }}</p>{% endif %}
+          <p class="text-[11px] uppercase tracking-widest font-bold text-gray-500">{{ p['author'] }} · {{ p['read_minutes'] }} min</p>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% else %}
+    <div class="bg-white rounded-2xl border-2 border-black p-12 text-center">
+      <h2 class="text-xl font-extrabold mb-2">No articles yet</h2>
+      <p class="text-gray-600">Check back soon for our latest wellness reads.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
