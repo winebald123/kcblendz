@@ -17,7 +17,7 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
     <!-- Main hero -->
     <div class="lg:col-span-8 relative rounded-2xl border-2 border-black overflow-hidden min-h-[420px] md:min-h-[520px]">
-      <video autoplay muted loop playsinline class="absolute inset-0 w-full h-full object-cover">
+      <video autoplay muted loop playsinline preload="metadata" class="absolute inset-0 w-full h-full object-cover">
         <source src="{{ url_for('static', filename='img/kcblendz-video.mp4') }}" type="video/mp4">
       </video>
       <div class="absolute inset-0 bg-gradient-to-br from-[var(--kc-dark)]/85 via-[var(--kc-dark)]/40 to-transparent"></div>

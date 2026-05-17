@@ -14,8 +14,8 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {% for s in saved %}
           <div class="bg-white rounded-2xl border-2 border-black overflow-hidden card-market">
-            <div class="aspect-square bg-gradient-to-br from-[var(--lime)] via-[var(--yellow)] to-[var(--fuchsia)] p-6 flex items-center justify-center">
-              <img src="{{ url_for('static', filename='img/custom-cup.svg') }}" alt="" class="w-32 h-32 drop-shadow-[4px_4px_0_rgba(0,0,0,0.3)]">
+            <div class="aspect-square overflow-hidden bg-[var(--kc-cream)]">
+              <img src="https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80" alt="{{ s['name'] }}" onerror="this.src='https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80'" class="w-full h-full object-cover">
             </div>
             <div class="p-4">
               <p class="font-extrabold text-base mb-1">{{ s['name'] }}</p>
@@ -45,7 +45,7 @@
       {% else %}
         <div class="bg-white rounded-2xl border-2 border-black p-12 text-center">
           <svg class="mx-auto mb-4 text-[var(--kc-green)]" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-          <h2 class="text-xl font-extrabold mb-2">No saved blends yet</h2>
+          <h2 class="brand text-2xl mb-2">No saved blends yet</h2>
           <p class="text-gray-600 mb-4">Build a custom smoothie and save it for quick reordering.</p>
           <a href="{{ url_for('builder') }}" class="btn-fuchsia rounded-full px-5 py-2.5 font-bold text-sm border-2 border-black inline-block">Build a blend</a>
         </div>

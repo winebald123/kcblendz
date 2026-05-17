@@ -49,7 +49,7 @@
           {% for it in items %}
           <li class="py-3 flex items-center gap-4">
             <div class="w-14 h-14 rounded-lg border-2 border-black overflow-hidden bg-gray-100 shrink-0">
-              <img src="{{ it['item_image'] or url_for('static', filename='img/custom-cup.svg') }}" alt="" class="w-full h-full object-cover">
+              <img onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80'" src="{{ it['item_image'] or 'https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80' }}" alt="" class="w-full h-full object-cover">
             </div>
             <div class="flex-1 min-w-0">
               <p class="font-bold">{{ it['item_name'] }}</p>

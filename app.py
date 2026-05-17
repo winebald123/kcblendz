@@ -53,6 +53,28 @@ UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Lightweight inline-markdown filter for blog posts and product descriptions.
+# Renders **bold**, *italic*, and `code` safely (HTML-escapes everything else).
+# ─────────────────────────────────────────────────────────────────────────────
+from markupsafe import Markup, escape as _esc
+import re as _re_md
+
+
+def md_inline(text):
+    if not text:
+        return ""
+    # Escape HTML first to avoid injection, then re-introduce safe markup.
+    s = str(_esc(text))
+    s = _re_md.sub(r"\*\*([^\*]+)\*\*", r"<strong>\1</strong>", s)
+    s = _re_md.sub(r"(?<!\*)\*([^\*\n]+)\*(?!\*)", r"<em>\1</em>", s)
+    s = _re_md.sub(r"`([^`]+)`", r"<code class='bg-[var(--kc-cream)] px-1 rounded'>\1</code>", s)
+    return Markup(s)
+
+
+app.jinja_env.filters["md_inline"] = md_inline
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATABASE — schema, connection, init
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEMA_SQL = """
@@ -311,7 +333,7 @@ def init_db():
             "INSERT INTO users (email, password_hash, full_name, phone, role) VALUES (?,?,?,?,?)",
             (
                 "admin@kcblendz.com",
-                generate_password_hash("KCBlendz@2025"),
+                generate_password_hash("KCBlendz@2026"),
                 "KCBlendz Admin",
                 "+234-802-4655-191",
                 "admin",
@@ -353,11 +375,11 @@ def init_db():
             "Nutty Gain":    "https://images.unsplash.com/photo-1571091655789-405eb7a3a3a8?w=800&q=80",
             "Mass Fuel":     "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
             "Berry Power":   "https://images.unsplash.com/photo-1505252585461-04db1eb84625?w=800&q=80",
-            "Choco Gain":    "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=800&q=80",
+            "Choco Gain":    "https://images.unsplash.com/photo-1572490122747-3968b75cc699?w=800&q=80",
             "Clean Green":   "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
             "Belly Reset":   "https://images.unsplash.com/photo-1622597467836-f3285f2131b8?w=800&q=80",
             "Fresh Core":    "https://images.unsplash.com/photo-1546173159-315724a31696?w=800&q=80",
-            "Mint Flush":    "https://images.unsplash.com/photo-1576094133503-7c1bdac88e2b?w=800&q=80",
+            "Mint Flush":    "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
             "Zesty Clean":   "https://images.unsplash.com/photo-1546548970-71785318a17b?w=800&q=80",
             "Happy Berry":   "https://images.unsplash.com/photo-1505252585461-04db1eb84625?w=800&q=80",
             "Citrus Lift":   "https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80",
@@ -979,6 +1001,17 @@ def check_csrf():
 
 
 @app.before_request
+def ensure_db_seeded():
+    """Self-healing seed for fresh deployments where the DB file may have been
+    wiped (e.g. Railway redeploys, ephemeral disks). Cheap O(1) check."""
+    try:
+        if not DB_PATH.exists() or DB_PATH.stat().st_size == 0:
+            init_db()
+    except Exception as _e:
+        print(f"[KCBlendz] before_request init_db skipped: {_e}")
+
+
+@app.before_request
 def enforce_csrf():
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         if request.path.startswith("/api/"):
@@ -993,6 +1026,10 @@ def security_headers(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # Cache static assets aggressively — the 8.5 MB brand video, the logo, etc.
+    # The browser will re-validate after a week; manual cache-busting via filename if needed.
+    if request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     return response
 
 
@@ -1211,6 +1248,36 @@ def api_builder_price():
     })
 
 
+# Curated real-photo map for custom smoothies. Each fruit maps to a working
+# Unsplash photo of a smoothie or fruit drink — same colour family, distinct image.
+CUSTOM_BLEND_IMAGE_BY_FRUIT = {
+    "Banana":     "https://images.unsplash.com/photo-1638176067000-9e2cffac2c40?w=800&q=80",
+    "Mango":      "https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80",
+    "Pineapple":  "https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80",
+    "Strawberry": "https://images.unsplash.com/photo-1505252585461-04db1eb84625?w=800&q=80",
+    "Blueberry":  "https://images.unsplash.com/photo-1638176067000-9e2cffac2c40?w=800&q=80",
+    "Kiwi":       "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
+    "Watermelon": "https://images.unsplash.com/photo-1546548970-71785318a17b?w=800&q=80",
+    "Orange":     "https://images.unsplash.com/photo-1546173159-315724a31696?w=800&q=80",
+    "Apple":      "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
+    "Papaya":     "https://images.unsplash.com/photo-1638176066757-37c50b3d2db9?w=800&q=80",
+    "Avocado":    "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80",
+    "Peach":      "https://images.unsplash.com/photo-1638176066757-37c50b3d2db9?w=800&q=80",
+}
+DEFAULT_BLEND_IMAGE = "https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80"
+
+
+def image_for_blend(fruit_names):
+    """Pick the most representative real photo for a custom blend
+    based on the dominant fruit (first picked). Always returns a real URL."""
+    if not fruit_names:
+        return DEFAULT_BLEND_IMAGE
+    for f in fruit_names:
+        if f in CUSTOM_BLEND_IMAGE_BY_FRUIT:
+            return CUSTOM_BLEND_IMAGE_BY_FRUIT[f]
+    return DEFAULT_BLEND_IMAGE
+
+
 @app.route("/builder/add-to-cart", methods=["POST"])
 @region_required
 def builder_add_to_cart():
@@ -1275,7 +1342,7 @@ def builder_add_to_cart():
     cart["items"].append({
         "kind": "custom",
         "name": save_name or "Custom Smoothie",
-        "image": url_for("static", filename="img/custom-cup.svg"),
+        "image": image_for_blend(grouped.get("fruit", [])),
         "meta": meta,
         "unit_price": unit_price,
         "quantity": qty,
@@ -1567,7 +1634,7 @@ def payment_process(order_id):
                    (order_id, method, gateway, f"TRF-{secrets.token_hex(6).upper()}",
                     order["total"], order["currency"], "awaiting_verification"))
         db.commit()
-        flash("Proof of payment uploaded. Our team will verify within 12 hours.", "success")
+        flash("Proof of payment uploaded. Our team will verify within 10 minutes.", "success")
         notify_admins(f"Bank transfer for {order['order_number']}",
                       "A customer uploaded proof of bank transfer. Verify in admin.",
                       url_for("admin_order_detail", order_id=order_id))
@@ -1909,7 +1976,7 @@ def account_saved_add(sid):
     cart["items"].append({
         "kind": "custom",
         "name": s["name"],
-        "image": url_for("static", filename="img/custom-cup.svg"),
+        "image": image_for_blend(grouped.get("fruit", [])),
         "meta": meta,
         "unit_price": s["price"],
         "quantity": 1,
@@ -2491,6 +2558,59 @@ def admin_messages():
     return render_template("admin/messages.html", msgs=msgs)
 
 
+# Admin profile — name, phone, password change
+@app.route("/admin/profile", methods=["GET", "POST"])
+@admin_required
+def admin_profile():
+    u = current_user()
+    db = get_db()
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        phone = request.form.get("phone", "").strip()
+        errors = []
+        if not full_name:
+            errors.append("Full name is required.")
+        if not valid_phone(phone):
+            errors.append("Enter a valid phone number.")
+        new_pw = request.form.get("new_password", "")
+        confirm_pw = request.form.get("confirm_password", "")
+        if new_pw:
+            current_pw = request.form.get("current_password", "")
+            if not check_password_hash(u["password_hash"], current_pw):
+                errors.append("Current password is incorrect.")
+            if len(new_pw) < 8:
+                errors.append("New password must be at least 8 characters.")
+            if new_pw != confirm_pw:
+                errors.append("New passwords do not match.")
+        if errors:
+            for e in errors:
+                flash(e, "error")
+        else:
+            if new_pw:
+                db.execute(
+                    "UPDATE users SET full_name=?, phone=?, password_hash=?, updated_at=datetime('now') WHERE id=?",
+                    (full_name, phone, generate_password_hash(new_pw), u["id"]),
+                )
+                flash("Profile and password updated.", "success")
+                audit("admin.password_changed", "user", u["id"])
+            else:
+                db.execute(
+                    "UPDATE users SET full_name=?, phone=?, updated_at=datetime('now') WHERE id=?",
+                    (full_name, phone, u["id"]),
+                )
+                flash("Profile updated.", "success")
+            db.commit()
+        return redirect(url_for("admin_profile"))
+    # Some quick stats so the page isn't bare
+    stats = db.execute("""SELECT
+        (SELECT COUNT(*) FROM products WHERE is_active=1) AS n_products,
+        (SELECT COUNT(*) FROM orders) AS n_orders,
+        (SELECT COUNT(*) FROM users WHERE role='customer' AND status='active') AS n_customers,
+        (SELECT COUNT(*) FROM audit_logs WHERE user_id=?) AS n_actions
+    """, (u["id"],)).fetchone()
+    return render_template("admin/profile.html", u=u, stats=stats)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SEO — sitemap & robots
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2545,6 +2665,20 @@ def err_500(e): return render_template("public/error.html", code=500, title="Som
 def cli_init_db():
     init_db()
     print(f"Database initialised at {DB_PATH}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bootstrap database at import time so gunicorn/Railway/any WSGI host has a
+# ready DB on first request. Safe to call multiple times: init_db is idempotent
+# (every table uses CREATE IF NOT EXISTS and seeds check for existing rows).
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    init_db()
+except Exception as _e:
+    # In environments where the filesystem isn't writable yet (e.g. during a
+    # build step), don't crash the import; log and continue. The first request
+    # will fall back to a fresh attempt.
+    print(f"[KCBlendz] init_db at import skipped: {_e}")
 
 
 if __name__ == "__main__":

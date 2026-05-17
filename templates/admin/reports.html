@@ -1,7 +1,7 @@
 {% extends "admin/_layout.html" %}
 {% set active = 'reports' %}
 {% block title %}Admin — Reports{% endblock %}
-{% block page_title %}Sales & growth reports{% endblock %}
+{% block page_title %}Sales &amp; growth reports{% endblock %}
 
 {% block head_extra %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -10,13 +10,16 @@
 {% block admin_body %}
 <!-- Top row: region compare + top products -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
-  <div class="bg-white rounded-2xl border-2 border-black p-5">
-    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Revenue by region</h2>
-    <canvas id="regionChart" height="200"></canvas>
+  <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4 text-[var(--kc-dark)]">Revenue by region</h2>
+    <!-- Fixed-height wrapper so Chart.js stops growing infinitely -->
+    <div style="position: relative; height: 220px; width: 100%;">
+      <canvas id="regionChart"></canvas>
+    </div>
     <div class="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
       {% for r in region_compare %}
-      <div class="bg-[var(--bg)] rounded-lg p-2">
-        <p class="font-extrabold text-base">{{ r['region'] }}</p>
+      <div class="bg-[var(--kc-bg)] rounded-lg p-2 border border-[var(--kc-dark)]/10">
+        <p class="font-extrabold text-base text-[var(--kc-dark)]">{{ r['region'] }}</p>
         <p class="text-gray-600">{{ r['n'] }} orders</p>
         <p class="font-bold">{{ format_money(r['v'], r['region']) }}</p>
       </div>
@@ -24,11 +27,12 @@
     </div>
   </div>
 
-  <div class="bg-white rounded-2xl border-2 border-black p-5">
-    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Top products</h2>
+  <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4 text-[var(--kc-dark)]">Top products</h2>
     {% if top_products %}
+    <div class="overflow-x-auto" style="max-height: 220px;">
     <table class="w-full text-sm">
-      <thead class="text-[11px] uppercase tracking-widest text-gray-500 border-b border-gray-200">
+      <thead class="text-[11px] uppercase tracking-widest text-gray-500 border-b border-gray-200 sticky top-0 bg-white">
         <tr><th class="text-left py-2">Product</th><th class="text-right">Qty</th><th class="text-right">Revenue</th></tr>
       </thead>
       <tbody>
@@ -41,6 +45,7 @@
       {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
       <p class="text-sm text-gray-500">No paid orders yet.</p>
     {% endif %}
@@ -48,15 +53,17 @@
 </div>
 
 <!-- Growth chart -->
-<div class="bg-white rounded-2xl border-2 border-black p-5 mb-5">
-  <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Customer growth · last 30 days</h2>
-  <canvas id="growthChart" height="80"></canvas>
+<div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5 mb-5">
+  <h2 class="text-base font-extrabold uppercase tracking-wider mb-4 text-[var(--kc-dark)]">Customer growth · last 30 days</h2>
+  <div style="position: relative; height: 240px; width: 100%;">
+    <canvas id="growthChart"></canvas>
+  </div>
 </div>
 
 <!-- Tables -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-  <div class="bg-white rounded-2xl border-2 border-black p-5">
-    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Daily revenue (last 30 days)</h2>
+  <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4 text-[var(--kc-dark)]">Daily revenue (last 30 days)</h2>
     {% if daily %}
     <div class="overflow-x-auto max-h-80">
       <table class="w-full text-sm">
@@ -78,8 +85,8 @@
     {% else %}<p class="text-sm text-gray-500">No data yet.</p>{% endif %}
   </div>
 
-  <div class="bg-white rounded-2xl border-2 border-black p-5">
-    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Monthly revenue (12 months)</h2>
+  <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4 text-[var(--kc-dark)]">Monthly revenue (12 months)</h2>
     {% if monthly %}
     <div class="overflow-x-auto max-h-80">
       <table class="w-full text-sm">
@@ -104,6 +111,9 @@
 
 <script>
 (function() {
+  // Brand-coloured charts with fast animations
+  const BRAND = { green: '#2E8B57', orange: '#F7941D', yellow: '#FBC02D', dark: '#1B3A2F' };
+
   // Region chart
   const regions = {{ region_compare | map(attribute='region') | list | tojson }};
   const regionRevenue = {{ region_compare | map(attribute='v') | list | tojson }};
@@ -114,11 +124,16 @@
       datasets: [{
         label: 'Revenue (mixed currency)',
         data: regionRevenue,
-        backgroundColor: ['#E91E8C', '#38BDF8', '#BAEF5B'],
-        borderColor: '#0F0F0F', borderWidth: 2
+        backgroundColor: [BRAND.orange, BRAND.green, BRAND.yellow],
+        borderColor: BRAND.dark, borderWidth: 2, borderRadius: 6
       }]
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, grid: { color: 'rgba(27,58,47,0.06)' } }, x: { grid: { display: false } } }
+    }
   });
 
   // Growth chart
@@ -126,8 +141,26 @@
   const gv = {{ growth | map(attribute='n') | list | tojson }};
   new Chart(document.getElementById('growthChart'), {
     type: 'line',
-    data: { labels: gd.map(d => d.slice(5)), datasets: [{ label: 'New customers', data: gv, borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.1)', borderWidth: 3, tension: .3, fill: true }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+    data: {
+      labels: gd.map(d => d.slice(5)),
+      datasets: [{
+        label: 'New customers',
+        data: gv,
+        borderColor: BRAND.green,
+        backgroundColor: 'rgba(46,139,87,0.12)',
+        borderWidth: 3, tension: .3, fill: true,
+        pointRadius: 3, pointBackgroundColor: BRAND.green
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      plugins: { legend: { position: 'bottom' } },
+      scales: {
+        y: { beginAtZero: true, ticks: { stepSize: 1, color: '#6b7280' }, grid: { color: 'rgba(27,58,47,0.06)' } },
+        x: { ticks: { color: '#6b7280' }, grid: { display: false } }
+      }
+    }
   });
 })();
 </script>

@@ -18,7 +18,7 @@
     <!-- Image -->
     <div class="lg:col-span-6">
       <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] overflow-hidden aspect-square relative">
-        <img src="{{ p['image_url'] or url_for('static', filename='img/custom-cup.svg') }}" alt="{{ p['name'] }}" class="w-full h-full object-cover">
+        <img onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80'" src="{{ p['image_url'] or 'https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80' }}" alt="{{ p['name'] }}" class="w-full h-full object-cover">
         <!-- Favorite floating button -->
         <form action="{{ url_for('favorite_toggle', pid=p['id']) }}" method="post" class="absolute top-4 right-4">
           <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
