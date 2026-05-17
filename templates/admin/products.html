@@ -46,7 +46,7 @@
           <td class="py-2">
             <div class="flex items-center gap-2">
               <div class="w-10 h-10 rounded-lg border-2 border-black overflow-hidden bg-gray-100 shrink-0">
-                <img onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80'" src="{{ p['image_url'] or 'https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80' }}" alt="" class="w-full h-full object-cover">
+                <img src="{{ p['image_url'] or url_for('static', filename='img/custom-cup.svg') }}" alt="" class="w-full h-full object-cover">
               </div>
               <div class="min-w-0">
                 <p class="font-bold truncate">{{ p['name'] }}</p>

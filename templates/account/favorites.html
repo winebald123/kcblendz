@@ -4,29 +4,29 @@
 
 {% block content %}
 <section class="max-w-7xl mx-auto px-4 py-8">
-  <h1 class="text-3xl md:text-4xl font-extrabold mb-6 text-[var(--kc-dark)]">My favorites</h1>
+  <h1 class="text-3xl md:text-4xl font-extrabold mb-6">My favorites</h1>
 
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
     {% include 'account/_sidebar.html' %}
 
     <div class="lg:col-span-9">
-      <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
-        <p class="text-sm text-gray-600">{{ favorites|length }} item{{ 's' if favorites|length != 1 }} saved · easy to revisit and order again</p>
-        <a href="{{ url_for('shop') }}" class="btn-outline-dark rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wider inline-flex items-center gap-2">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Browse menu
-        </a>
+      <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+        <div>
+          <p class="text-sm text-gray-600">{{ favorites|length }} item{{ 's' if favorites|length != 1 }} saved · easy to revisit & order again</p>
+        </div>
+        <a href="{{ url_for('shop') }}" class="btn-outline-dark rounded-full px-5 py-2 text-xs font-extrabold uppercase tracking-wider">+ Browse menu</a>
       </div>
 
       {% if favorites %}
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
         {% for p in favorites %}
         <article class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] overflow-hidden relative card-market">
           <a href="{{ url_for('product_detail', slug=p['slug']) }}" class="block">
             <div class="aspect-square overflow-hidden bg-[var(--kc-bg)]">
-              <img src="{{ p['image_url'] or 'https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80' }}" alt="{{ p['name'] }}" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80'" class="w-full h-full object-cover">
+              <img src="{{ p['image_url'] or FALLBACK_IMG }}" alt="{{ p['name'] }}" class="w-full h-full object-cover">
             </div>
           </a>
+          <!-- Remove button -->
           <form action="{{ url_for('favorite_toggle', pid=p['id']) }}" method="post" class="absolute top-3 right-3">
             <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
             <button type="submit" class="w-9 h-9 rounded-full bg-white border-2 border-[var(--kc-dark)] shadow-[2px_2px_0_var(--kc-dark)] hover:scale-105 transition flex items-center justify-center" aria-label="Remove from favorites" title="Remove">
@@ -57,12 +57,13 @@
         {% endfor %}
       </div>
       {% else %}
-      <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-10 text-center">
-        <svg class="mx-auto mb-4 text-[var(--kc-green)]" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-        <h2 class="brand text-2xl mb-2">No favorites yet</h2>
+      <!-- Empty state -->
+        <div class="bg-white rounded-2xl border-2 border-black p-12 text-center">
+        <svg class="mx-auto mb-4 text-[var(--kc-green)]" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        <h2 class="text-xl font-extrabold mb-2">No favorites yet</h2>
         <p class="text-sm text-gray-600 max-w-md mx-auto mb-5">Tap the heart on any product to save it here. Build a list of your go-to blends for faster reordering.</p>
         <a href="{{ url_for('shop') }}" class="btn-orange inline-flex items-center gap-2 rounded-full px-6 py-3 font-extrabold uppercase tracking-wider text-sm border-2 border-[var(--kc-dark)] shadow-[4px_4px_0_var(--kc-dark)]">
-          Browse the menu
+          Browse menu
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
         </a>
       </div>

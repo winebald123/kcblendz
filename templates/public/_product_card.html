@@ -1,7 +1,7 @@
 {# Product card — expects p, price_field #}
 <div class="card-market bg-white rounded-2xl border-2 border-black overflow-hidden flex flex-col">
   <a href="{{ url_for('product_detail', slug=p['slug']) }}" class="relative block aspect-square overflow-hidden bg-gray-100">
-    <img src="{{ p['image_url'] or 'https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80' }}" alt="{{ p['name'] }}" loading="lazy" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80';" class="w-full h-full object-cover bg-[var(--kc-cream)]">
+    <img src="{{ p['image_url'] or url_for('static', filename='img/custom-cup.svg') }}" alt="{{ p['name'] }}" loading="lazy" class="w-full h-full object-cover">
     <!-- Badges -->
     <div class="absolute top-2 left-2 flex flex-col gap-1">
       {% if p['is_bestseller'] %}<span class="badge-square bg-[var(--fuchsia)] text-white">Bestseller</span>{% endif %}

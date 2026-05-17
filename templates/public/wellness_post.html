@@ -37,17 +37,17 @@
       {% for paragraph in p['content'].split('\n\n') %}
         {% if paragraph.strip() %}
           {% if paragraph.startswith('## ') %}
-            <h2 class="text-2xl font-extrabold mt-8 mb-3 text-[var(--kc-dark)]">{{ paragraph[3:] | md_inline }}</h2>
+            <h2 class="text-2xl font-extrabold mt-8 mb-3">{{ paragraph[3:] | mdinline }}</h2>
           {% elif paragraph.startswith('# ') %}
-            <h2 class="text-3xl font-extrabold mt-8 mb-3 text-[var(--kc-dark)]">{{ paragraph[2:] | md_inline }}</h2>
+            <h2 class="text-3xl font-extrabold mt-8 mb-3">{{ paragraph[2:] | mdinline }}</h2>
           {% elif paragraph.startswith('- ') %}
             <ul class="list-disc pl-6 space-y-1">
               {% for line in paragraph.split('\n') %}
-                {% if line.startswith('- ') %}<li>{{ line[2:] | md_inline }}</li>{% endif %}
+                {% if line.startswith('- ') %}<li>{{ line[2:] | mdinline }}</li>{% endif %}
               {% endfor %}
             </ul>
           {% else %}
-            <p>{{ paragraph | md_inline }}</p>
+            <p>{{ paragraph | mdinline }}</p>
           {% endif %}
         {% endif %}
       {% endfor %}

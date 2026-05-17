@@ -1,98 +1,87 @@
 {% extends "admin/_layout.html" %}
 {% set active = 'profile' %}
-{% block title %}Admin · My profile{% endblock %}
-{% block page_title %}My profile{% endblock %}
+{% block title %}Admin — Profile{% endblock %}
+{% block page_title %}My profile & settings{% endblock %}
 
 {% block admin_body %}
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-  <!-- LEFT: stats card -->
-  <div class="lg:col-span-1">
-    <div class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5 mb-4">
-      <div class="flex items-center gap-3 mb-3">
-        <div class="w-14 h-14 rounded-full bg-[var(--kc-yellow)] border-2 border-[var(--kc-dark)] flex items-center justify-center font-extrabold text-lg">
-          {{ u['full_name'][:1] | upper if u['full_name'] else 'A' }}
-        </div>
-        <div class="min-w-0">
-          <p class="font-extrabold text-base truncate">{{ u['full_name'] }}</p>
-          <p class="text-xs text-gray-500 truncate">{{ u['email'] }}</p>
-          <span class="badge-square bg-[var(--kc-orange)] text-white mt-1 inline-block">Admin</span>
-        </div>
+
+  <!-- Account card -->
+  <div class="bg-white rounded-2xl border-2 border-black p-5">
+    <div class="flex items-center gap-4 mb-4">
+      <div class="w-16 h-16 rounded-full bg-[var(--kc-green)] text-white flex items-center justify-center text-2xl font-extrabold">
+        {{ (u['full_name'] or 'A')[:1]|upper }}
       </div>
-      <div class="grid grid-cols-2 gap-2 text-center">
-        <div class="bg-[var(--kc-bg)] rounded-lg p-3 border border-[var(--kc-dark)]/10">
-          <p class="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Products</p>
-          <p class="text-2xl font-extrabold text-[var(--kc-dark)]">{{ stats['n_products'] }}</p>
-        </div>
-        <div class="bg-[var(--kc-bg)] rounded-lg p-3 border border-[var(--kc-dark)]/10">
-          <p class="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Orders</p>
-          <p class="text-2xl font-extrabold text-[var(--kc-dark)]">{{ stats['n_orders'] }}</p>
-        </div>
-        <div class="bg-[var(--kc-bg)] rounded-lg p-3 border border-[var(--kc-dark)]/10">
-          <p class="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Customers</p>
-          <p class="text-2xl font-extrabold text-[var(--kc-dark)]">{{ stats['n_customers'] }}</p>
-        </div>
-        <div class="bg-[var(--kc-bg)] rounded-lg p-3 border border-[var(--kc-dark)]/10">
-          <p class="text-[10px] uppercase font-bold text-gray-500 tracking-widest">My actions</p>
-          <p class="text-2xl font-extrabold text-[var(--kc-dark)]">{{ stats['n_actions'] }}</p>
-        </div>
+      <div class="min-w-0">
+        <p class="font-extrabold text-lg truncate">{{ u['full_name'] }}</p>
+        <p class="text-sm text-gray-500 truncate">{{ u['email'] }}</p>
+        <span class="badge-square bg-[var(--kc-green)] text-white mt-1 inline-block">Administrator</span>
       </div>
     </div>
-
-    <div class="bg-[var(--kc-cream)] rounded-2xl border-2 border-[var(--kc-yellow)] p-4 text-xs text-gray-700">
-      <p class="font-bold mb-1 flex items-center gap-1.5">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        Security tip
-      </p>
-      <p>Use a long, unique password and update it whenever you suspect it's been exposed. Every admin action you take is logged.</p>
+    <dl class="text-sm space-y-2 border-t-2 border-dashed border-gray-200 pt-3">
+      <div class="flex justify-between"><dt class="text-gray-500">Phone</dt><dd class="font-bold">{{ u['phone'] or '—' }}</dd></div>
+      <div class="flex justify-between"><dt class="text-gray-500">Member since</dt><dd class="font-bold">{{ (u['created_at'] or '')[:10] }}</dd></div>
+    </dl>
+    <div class="grid grid-cols-3 gap-2 text-center mt-4">
+      <div class="bg-[var(--bg)] rounded-lg p-2"><p class="text-xl font-extrabold">{{ stats.orders }}</p><p class="text-[10px] uppercase tracking-widest text-gray-500">Orders</p></div>
+      <div class="bg-[var(--bg)] rounded-lg p-2"><p class="text-xl font-extrabold">{{ stats.products }}</p><p class="text-[10px] uppercase tracking-widest text-gray-500">Products</p></div>
+      <div class="bg-[var(--bg)] rounded-lg p-2"><p class="text-xl font-extrabold">{{ stats.users }}</p><p class="text-[10px] uppercase tracking-widest text-gray-500">Users</p></div>
     </div>
   </div>
 
-  <!-- RIGHT: forms -->
-  <div class="lg:col-span-2 space-y-5">
-    <!-- Profile details -->
-    <form action="{{ url_for('admin_profile') }}" method="post" class="bg-white rounded-2xl border-2 border-[var(--kc-dark)] p-5">
+  <!-- Edit details -->
+  <div class="bg-white rounded-2xl border-2 border-black p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Account details</h2>
+    <form method="post" class="space-y-4">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-      <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Profile details</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label class="label">Full name</label>
-          <input type="text" name="full_name" value="{{ u['full_name'] }}" required class="input w-full">
-        </div>
-        <div>
-          <label class="label">Email (read-only)</label>
-          <input type="email" value="{{ u['email'] }}" disabled class="input w-full bg-gray-100 cursor-not-allowed">
-        </div>
-        <div class="sm:col-span-2">
-          <label class="label">Phone</label>
-          <input type="tel" name="phone" value="{{ u['phone'] }}" required class="input w-full">
-        </div>
+      <input type="hidden" name="action" value="details">
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Full name</label>
+        <input name="full_name" value="{{ u['full_name'] }}" required
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
       </div>
-      <p class="text-xs text-gray-500 mt-3">Leave password fields below blank if you only want to update name or phone.</p>
-
-      <hr class="my-5 border-[var(--kc-dark)]/15">
-
-      <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Change password</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div class="sm:col-span-2">
-          <label class="label">Current password</label>
-          <input type="password" name="current_password" autocomplete="current-password" class="input w-full">
-        </div>
-        <div>
-          <label class="label">New password</label>
-          <input type="password" name="new_password" minlength="8" autocomplete="new-password" class="input w-full">
-        </div>
-        <div>
-          <label class="label">Confirm new password</label>
-          <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" class="input w-full">
-        </div>
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Email</label>
+        <input name="email" type="email" value="{{ u['email'] }}" required
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
       </div>
-      <p class="text-xs text-gray-500 mt-3">At least 8 characters · mix letters, numbers and a symbol for best security.</p>
-
-      <div class="mt-5 flex justify-end gap-3">
-        <a href="{{ url_for('admin_dashboard') }}" class="btn-outline-dark rounded-full px-5 py-2 text-xs font-extrabold uppercase tracking-wider">Cancel</a>
-        <button type="submit" class="btn-orange rounded-full px-6 py-2 text-xs font-extrabold uppercase tracking-wider border-2 border-[var(--kc-dark)] shadow-[3px_3px_0_var(--kc-dark)]">Save changes</button>
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Phone</label>
+        <input name="phone" value="{{ u['phone'] or '' }}"
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
       </div>
+      <button class="btn-green rounded-full px-5 py-2.5 text-sm font-extrabold uppercase tracking-wider border-2 border-black w-full">
+        Save changes
+      </button>
     </form>
   </div>
+
+  <!-- Change password -->
+  <div class="bg-white rounded-2xl border-2 border-black p-5">
+    <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Change password</h2>
+    <form method="post" class="space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="password">
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Current password</label>
+        <input name="current_password" type="password" required
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">New password</label>
+        <input name="new_password" type="password" required minlength="8"
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Confirm new password</label>
+        <input name="confirm_password" type="password" required minlength="8"
+               class="w-full border-2 border-black rounded-lg px-3 py-2 text-sm">
+      </div>
+      <button class="btn-green rounded-full px-5 py-2.5 text-sm font-extrabold uppercase tracking-wider border-2 border-black w-full">
+        Update password
+      </button>
+    </form>
+  </div>
+
 </div>
 {% endblock %}
