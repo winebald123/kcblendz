@@ -1,3 +1,4 @@
+{% from "partials/_macros.html" import export_button %}
 {% extends "admin/_layout.html" %}
 {% set active = 'reports' %}
 {% block title %}Admin — Reports{% endblock %}
@@ -13,6 +14,21 @@
 {% endblock %}
 
 {% block admin_body %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <p class="text-xs text-gray-500 max-w-2xl">
+    The cards under <em>Revenue by region</em> show each region in its own currency.
+    The tables below show raw amounts; for a per-currency export use the CSV below.
+  </p>
+  <div class="flex flex-wrap items-center gap-2">
+    {{ export_button(url_for('admin_reports_export', type='all'),      'Export everything', primary=True) }}
+    {{ export_button(url_for('admin_reports_export', type='region'),   'Region CSV') }}
+    {{ export_button(url_for('admin_reports_export', type='daily'),    'Daily CSV') }}
+    {{ export_button(url_for('admin_reports_export', type='monthly'),  'Monthly CSV') }}
+    {{ export_button(url_for('admin_reports_export', type='products'), 'Products CSV') }}
+    {{ export_button(url_for('admin_reports_export', type='growth'),   'Growth CSV') }}
+  </div>
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
   <div class="bg-white rounded-2xl border-2 border-black p-5">
     <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Revenue by region</h2>

@@ -32,6 +32,14 @@
           {% if order['payment_status'] != 'paid' %}
             <a href="{{ url_for('payment', order_id=order['id']) }}" class="btn-fuchsia rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wider border-2 border-black">Complete payment</a>
           {% endif %}
+          <a href="{{ url_for('order_receipt', order_id=order['id']) }}" target="_blank" class="btn-outline-dark rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wider border-2 border-black inline-flex items-center gap-2">
+            🖨 Receipt
+          </a>
+          {% if order['payment_status'] == 'paid' and not cancelled and not refund_open %}
+            <a href="{{ url_for('request_refund', order_id=order['id']) }}" class="btn-outline-dark rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wider border-2 border-black">Request refund</a>
+          {% elif refund_open %}
+            <span class="badge-square bg-amber-100 text-amber-800 border border-amber-400 px-3 py-1.5 text-xs">Refund pending</span>
+          {% endif %}
           <form action="{{ url_for('account_reorder', order_id=order['id']) }}" method="post">
             <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
             <button type="submit" class="btn-outline-dark rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wider border-2 border-black inline-flex items-center gap-2">
@@ -41,6 +49,42 @@
           </form>
         </div>
       </div>
+
+      <!-- Tracking timeline -->
+      {% if timeline %}
+      <div class="bg-white rounded-2xl border-2 border-black p-5">
+        <h2 class="text-lg font-extrabold uppercase tracking-wider mb-4">Tracking timeline</h2>
+        <ol class="space-y-0 relative">
+          {% if cancelled %}
+            <li class="flex gap-4 py-3 bg-rose-50 -mx-2 px-2 rounded-xl border-2 border-rose-200">
+              <span class="w-7 h-7 rounded-full bg-rose-600 text-white inline-flex items-center justify-center mt-0.5 shrink-0 font-bold">✕</span>
+              <div>
+                <p class="font-extrabold">Order cancelled</p>
+                <p class="text-sm text-gray-600">If this looks wrong, please contact us.</p>
+              </div>
+            </li>
+          {% else %}
+            {% for step in timeline %}
+              <li class="flex gap-4 py-3 {% if step.current %}-mx-2 px-2 rounded-xl bg-[var(--kc-yellow)]/30 border-2 border-[var(--kc-yellow)]{% endif %}">
+                <span class="w-7 h-7 rounded-full inline-flex items-center justify-center mt-0.5 shrink-0 font-bold text-xs
+                             {% if step.done %}bg-[var(--kc-green)] text-white
+                             {% elif step.current %}bg-[var(--kc-orange)] text-white animate-pulse
+                             {% else %}bg-gray-200 text-gray-500{% endif %}">
+                  {% if step.done %}✓{% else %}{{ loop.index }}{% endif %}
+                </span>
+                <div class="flex-1">
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="font-extrabold {% if not step.done and not step.current %}text-gray-400{% endif %}">{{ step.label }}</p>
+                    {% if step.when %}<p class="text-xs text-gray-500 font-mono">{{ step.when[:16] }}</p>{% endif %}
+                  </div>
+                  <p class="text-sm text-gray-600 {% if not step.done and not step.current %}text-gray-400{% endif %}">{{ step.blurb }}</p>
+                </div>
+              </li>
+            {% endfor %}
+          {% endif %}
+        </ol>
+      </div>
+      {% endif %}
 
       <!-- Items -->
       <div class="bg-white rounded-2xl border-2 border-black p-5">
@@ -62,6 +106,12 @@
         </ul>
         <dl class="mt-4 pt-4 border-t-2 border-dashed border-gray-300 space-y-2 text-sm">
           <div class="flex justify-between"><dt class="text-gray-600">Subtotal</dt><dd class="font-bold">{{ format_money(order['subtotal'], order['region']) }}</dd></div>
+          {% if order['discount_amount'] and order['discount_amount'] > 0 %}
+            <div class="flex justify-between text-emerald-700">
+              <dt>Discount{% if order['promo_code'] %} · {{ order['promo_code'] }}{% endif %}</dt>
+              <dd class="font-bold">− {{ format_money(order['discount_amount'], order['region']) }}</dd>
+            </div>
+          {% endif %}
           {% if order['delivery_fee'] %}<div class="flex justify-between"><dt class="text-gray-600">Delivery</dt><dd class="font-bold">{{ format_money(order['delivery_fee'], order['region']) }}</dd></div>{% endif %}
           <div class="flex justify-between text-base pt-1"><dt class="font-extrabold uppercase tracking-wider">Total</dt><dd class="font-extrabold">{{ format_money(order['total'], order['region']) }}</dd></div>
         </dl>

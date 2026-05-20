@@ -34,6 +34,7 @@ kc.DB_PATH = Path(_tmp.name)
 
 def _fresh_db():
     """Re-create and re-seed the test database from scratch."""
+    kc.app.testing = True  # disables in-process rate limiters so test order can't trip them
     if kc.DB_PATH.exists():
         kc.DB_PATH.unlink()
     kc.init_db()

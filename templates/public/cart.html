@@ -52,7 +52,7 @@
     </div>
 
     <!-- Summary -->
-    <aside class="lg:col-span-4">
+    <aside class="lg:col-span-4 mb-24 lg:mb-0">
       <div class="lg:sticky lg:top-32 bg-white rounded-2xl border-2 border-black p-5 shadow-[4px_4px_0_var(--fuchsia)]">
         <h2 class="text-lg font-extrabold uppercase tracking-wider mb-4">Order summary</h2>
         <dl class="space-y-2 text-sm mb-4 pb-4 border-b-2 border-dashed border-gray-300">
@@ -69,6 +69,19 @@
         <p class="text-[10px] text-gray-500 text-center mt-3 uppercase tracking-widest font-bold">Secure checkout · Paystack · PayPal · Bank transfer</p>
       </div>
     </aside>
+  </div>
+
+  <!-- Mobile sticky checkout bar — always visible until the user checks out -->
+  <div class="lg:hidden fixed inset-x-0 bottom-0 z-40 bg-white border-t-2 border-[var(--kc-dark)] shadow-[0_-3px_0_var(--kc-orange)] px-4 py-3">
+    <div class="flex items-center justify-between gap-3 max-w-xl mx-auto">
+      <div class="min-w-0">
+        <p class="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Total</p>
+        <p class="text-lg font-extrabold leading-none">{{ format_money(subtotal, cart['region']) }}</p>
+      </div>
+      <a href="{{ url_for('checkout') }}" class="btn-fuchsia rounded-full px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider border-2 border-black shadow-[2px_2px_0_#000] flex-shrink-0">
+        Checkout →
+      </a>
+    </div>
   </div>
   {% else %}
   <div class="bg-white rounded-2xl border-2 border-black p-12 text-center max-w-xl mx-auto">

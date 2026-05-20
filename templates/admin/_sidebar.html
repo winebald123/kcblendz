@@ -1,5 +1,5 @@
 {# Admin sidebar — uses `active` var #}
-<aside class="lg:w-64 lg:shrink-0 bg-[var(--dark)] text-white lg:min-h-screen border-r-2 border-black">
+<aside class="admin-sidebar lg:w-64 lg:shrink-0 text-white lg:min-h-screen border-r-2 border-black">
   <div class="p-4 border-b-2 border-white/10">
     <a href="{{ url_for('admin_dashboard') }}" class="flex items-center gap-3">
       <img src="{{ url_for('static', filename='img/logo.png') }}" alt="" class="w-9 h-9 rounded-full border-2 border-white object-cover">
@@ -30,6 +30,10 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       Customers
     </a>
+    <a href="{{ url_for('admin_subscriptions') }}" class="admin-link {% if active == 'subscriptions' %}active{% endif %}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      Subscriptions
+    </a>
     <a href="{{ url_for('admin_builder') }}" class="admin-link {% if active == 'builder' %}active{% endif %}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Builder Config
@@ -41,6 +45,18 @@
     <a href="{{ url_for('admin_reports') }}" class="admin-link {% if active == 'reports' %}active{% endif %}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
       Reports
+    </a>
+    <a href="{{ url_for('admin_promo') }}" class="admin-link {% if active == 'promo' %}active{% endif %}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      Promo Codes
+    </a>
+    <a href="{{ url_for('admin_refunds') }}" class="admin-link {% if active == 'refunds' %}active{% endif %}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+      Refunds
+    </a>
+    <a href="{{ url_for('admin_faqs') }}" class="admin-link {% if active == 'faqs' %}active{% endif %}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      FAQs
     </a>
     <a href="{{ url_for('admin_messages') }}" class="admin-link {% if active == 'messages' %}active{% endif %}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>

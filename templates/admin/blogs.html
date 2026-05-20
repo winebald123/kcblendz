@@ -51,7 +51,7 @@
           <td class="py-2 text-xs text-gray-500">{{ p['updated_at'][:10] if p['updated_at'] else p['created_at'][:10] }}</td>
           <td class="py-2 text-right">
             <a href="{{ url_for('admin_blog_edit', pid=p['id']) }}" class="text-xs font-bold uppercase tracking-wider hover:text-[var(--fuchsia)]">Edit</a>
-            <form action="{{ url_for('admin_blog_delete', pid=p['id']) }}" method="post" class="inline ml-2" onsubmit="return confirm('Delete this post?')">
+            <form action="{{ url_for('admin_blog_delete', pid=p['id']) }}" method="post" class="inline ml-2" data-confirm="This will permanently remove the article. The action cannot be undone." data-confirm-title="Delete this article?" data-confirm-label="Delete">
               <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
               <button type="submit" class="text-xs font-bold uppercase tracking-wider text-rose-600 hover:underline">Delete</button>
             </form>

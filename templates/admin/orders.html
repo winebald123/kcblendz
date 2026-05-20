@@ -1,3 +1,4 @@
+{% from "partials/_macros.html" import export_button %}
 {% extends "admin/_layout.html" %}
 {% set active = 'orders' %}
 {% block title %}Admin — Orders{% endblock %}
@@ -15,8 +16,8 @@
     </div>
     <select name="status" onchange="this.form.submit()" class="input text-sm">
       <option value="">All statuses</option>
-      {% for s in ['pending','processing','ready','delivered','cancelled'] %}
-        <option value="{{ s }}" {% if s==status %}selected{% endif %}>{{ s|capitalize }}</option>
+      {% for s in ['pending','processing','ready','out_for_delivery','delivered','cancelled'] %}
+        <option value="{{ s }}" {% if s==status %}selected{% endif %}>{{ s|replace('_',' ')|capitalize }}</option>
       {% endfor %}
     </select>
     <select name="region" onchange="this.form.submit()" class="input text-sm">
@@ -28,6 +29,7 @@
     {% if q or status or region %}
       <a href="{{ url_for('admin_orders') }}" class="text-xs font-bold uppercase tracking-wider hover:text-[var(--fuchsia)]">Clear</a>
     {% endif %}
+    {{ export_button(url_for('admin_orders_export'), 'Export CSV', extra_class='ml-auto') }}
   </form>
 
   <!-- Table -->

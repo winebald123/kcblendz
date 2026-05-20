@@ -52,6 +52,19 @@ app.config.update(
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
 
+@app.template_filter("from_json")
+def _from_json(s):
+    """Decode a JSON string in a template — used to render features_json on
+    the subscription cards. Returns [] on any error so a malformed value
+    never crashes the page."""
+    if not s:
+        return []
+    try:
+        return json.loads(s)
+    except (TypeError, ValueError):
+        return []
+
+
 @app.template_filter("mdinline")
 def md_inline(text):
     """Render inline markdown safely: **bold**, *italic*, `code`,
@@ -290,6 +303,107 @@ CREATE TABLE IF NOT EXISTS reviews (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ─── New tables added in v2 (all idempotent via IF NOT EXISTS) ──────────────
+
+-- Per-order timeline events for the tracking system (created/paid/processing/...)
+CREATE TABLE IF NOT EXISTS order_status_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,         -- pending|paid|processing|ready|out_for_delivery|delivered|cancelled
+    note TEXT,
+    actor TEXT,                   -- 'system' | 'admin:<email>' | 'customer'
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_order_status_events_order ON order_status_events(order_id, created_at);
+
+-- Subscription plans + active customer subscriptions
+CREATE TABLE IF NOT EXISTS subscription_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    tagline TEXT,
+    features_json TEXT NOT NULL DEFAULT '[]',
+    price_ngn_monthly REAL DEFAULT 0,
+    price_mur_monthly REAL DEFAULT 0,
+    price_usd_monthly REAL DEFAULT 0,
+    price_ngn_yearly REAL DEFAULT 0,
+    price_mur_yearly REAL DEFAULT 0,
+    price_usd_yearly REAL DEFAULT 0,
+    is_featured INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id INTEGER NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
+    billing_cycle TEXT NOT NULL DEFAULT 'monthly',  -- monthly | yearly
+    region TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    price REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',           -- active | cancelled | past_due
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cancelled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status);
+
+-- Promotional codes (percentage / fixed amount)
+CREATE TABLE IF NOT EXISTS promo_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    description TEXT,
+    discount_type TEXT NOT NULL DEFAULT 'percent',   -- percent | fixed
+    discount_value REAL NOT NULL,                    -- 10 = 10%  OR  500 = 500 in region's currency
+    min_subtotal REAL NOT NULL DEFAULT 0,
+    region TEXT,                                     -- NULL = global
+    starts_at TEXT,
+    ends_at TEXT,
+    max_uses INTEGER,                                -- NULL = unlimited
+    used_count INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_promo_active ON promo_codes(is_active, code);
+
+-- Refund requests (customer-initiated, admin-reviewed)
+CREATE TABLE IF NOT EXISTS refund_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL,
+    details TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',         -- pending | approved | rejected | refunded
+    admin_response TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_refund_requests_status ON refund_requests(status);
+
+-- Structured FAQ entries (replaces hard-coded list, lets admin add new ones)
+CREATE TABLE IF NOT EXISTS faqs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL DEFAULT 'customers',     -- customers | team | insights
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_published INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_faqs_category ON faqs(category, sort_order);
+
+-- Team members (shown on About page)
+CREATE TABLE IF NOT EXISTS team_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    bio TEXT,
+    avatar_url TEXT,
+    socials_json TEXT DEFAULT '{}',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
@@ -330,11 +444,49 @@ def close_db(_):
         db.close()
 
 
+def _safe_add_column(conn, table, column, decl):
+    """ALTER TABLE ... ADD COLUMN, swallowing the duplicate-column error so
+    migrations are idempotent. SQLite has no `IF NOT EXISTS` for ADD COLUMN."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+
+
+def migrate(conn):
+    """Apply additive schema migrations to existing databases.
+
+    All operations are idempotent so this is safe to run on every boot
+    against an already-migrated DB. Never drops or renames anything.
+    """
+    # v2 — admin profile pictures + MFA + soft-delete safety on categories
+    _safe_add_column(conn, "users", "avatar_url",    "TEXT")
+    _safe_add_column(conn, "users", "mfa_secret",    "TEXT")
+    _safe_add_column(conn, "users", "mfa_enabled",   "INTEGER NOT NULL DEFAULT 0")
+    _safe_add_column(conn, "users", "login_attempts","INTEGER NOT NULL DEFAULT 0")
+    _safe_add_column(conn, "users", "locked_until",  "TEXT")
+    # v2 — promo code & receipt fields on orders
+    _safe_add_column(conn, "orders", "promo_code",       "TEXT")
+    _safe_add_column(conn, "orders", "discount_amount",  "REAL NOT NULL DEFAULT 0")
+    _safe_add_column(conn, "orders", "tracking_token",   "TEXT")
+    # v2 — review author photos
+    _safe_add_column(conn, "reviews", "avatar_url", "TEXT")
+    # v2 — soft-delete flag on categories (so deleting one becomes reversible)
+    _safe_add_column(conn, "categories", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
+    # v3 — subscriptions now require payment before activation
+    _safe_add_column(conn, "subscriptions", "order_id", "INTEGER")
+    _safe_add_column(conn, "orders", "subscription_id", "INTEGER")
+    _safe_add_column(conn, "orders", "is_subscription", "INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
 def init_db():
     """Create schema and load REAL KCBlendz menu data from the catalog (no fake seeds)."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
+    migrate(conn)
 
     # Admin user — created on first run only
     if not conn.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -881,9 +1033,163 @@ def init_db():
 
     conn.commit()
     conn.close()
+    _seed_v2_data()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def _seed_v2_data():
+    """Populate v2 lookup tables (subscription plans, FAQs, team, customer
+    testimonials) on a fresh DB — but only if they are empty, so re-running
+    is harmless. Keeps seed data outside init_db so existing deployments get
+    the new content even though their products/categories are already seeded.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    # ─── Subscription plans ───────────────────────────────────────────────
+    if not conn.execute("SELECT 1 FROM subscription_plans LIMIT 1").fetchone():
+        plans = [
+            ("seed", "Seed", "Try the wellness life — one blend a week.",
+             ["1 smoothie per week (your choice)",
+              "Free local delivery",
+              "Early access to new flavours",
+              "Member-only recipe newsletter"],
+             6500, 290, 8.99, 65000, 2900, 89.99, 0),
+            ("bloom", "Bloom", "Daily wellness, locked in. Most popular.",
+             ["3 smoothies per week",
+              "Priority same-day delivery",
+              "10% off à-la-carte purchases",
+              "1 free wellness shot per month",
+              "Pause or swap any time"],
+             18500, 850, 24.99, 185000, 8500, 249.99, 1),
+            ("flourish", "Flourish", "All-in. Built for families & athletes.",
+             ["7 smoothies per week",
+              "Free same-day delivery, every order",
+              "20% off à-la-carte & party packs",
+              "4 free wellness shots per month",
+              "Personalised nutrition consult (quarterly)",
+              "Concierge support via WhatsApp"],
+             39500, 1900, 54.99, 395000, 19000, 549.99, 0),
+        ]
+        for i, (slug, name, tagline, features, p_ng_m, p_mu_m, p_us_m,
+                p_ng_y, p_mu_y, p_us_y, featured) in enumerate(plans):
+            conn.execute("""INSERT INTO subscription_plans (slug, name, tagline, features_json,
+                price_ngn_monthly, price_mur_monthly, price_usd_monthly,
+                price_ngn_yearly, price_mur_yearly, price_usd_yearly,
+                is_featured, sort_order) VALUES (?,?,?,?, ?,?,?, ?,?,?, ?,?)""",
+                (slug, name, tagline, json.dumps(features),
+                 p_ng_m, p_mu_m, p_us_m, p_ng_y, p_mu_y, p_us_y, featured, i))
+
+    # ─── FAQs (categorised) ───────────────────────────────────────────────
+    if not conn.execute("SELECT 1 FROM faqs LIMIT 1").fetchone():
+        faqs = [
+            # CUSTOMERS
+            ("customers", "How fresh are KCBlendz smoothies?",
+             "Every smoothie is hand-blended on the morning of delivery. We never pre-mix, pasteurise or use concentrates. Once delivered, drink within 24 hours and keep refrigerated."),
+            ("customers", "Which areas do you deliver to?",
+             "Our campus kitchen is in Pamplemousses, Mauritius — we deliver island-wide within 24 hours, with most orders arriving same-day. In Nigeria we deliver across Lagos with same-day options for orders placed before 1pm. Global customers can order our shelf-stable products which ship via DHL."),
+            ("customers", "How do I track my order?",
+             "Every order page has a live tracking timeline. Signed-in customers see all their orders under Account → Orders. Guests can track via the link in their confirmation email or by entering their order number and email on the Track Order page."),
+            ("customers", "What payment methods do you accept?",
+             "Nigeria — Paystack (cards, USSD, bank transfer, mobile money). Mauritius & Global — PayPal and credit/debit cards. Bank transfer with proof upload is available everywhere; we verify within 12 hours."),
+            ("customers", "What is your refund policy?",
+             "If your order arrives damaged or incorrect, message us within 24 hours of delivery with a photo. You can also submit a Request Refund from your order page and our team will review within 12 hours."),
+            ("customers", "Can I use a promo code?",
+             "Yes — enter your code at checkout. New customers automatically get 10% off their first order with code WELCOME10."),
+            # OUR TEAM
+            ("team", "Who founded KCBlendz?",
+             "KCBlendz was founded by our culinary lead in 2024 at our campus kitchen in Pamplemousses (\"Kitchen 2 Kongo\"). The brand now spans Mauritius, Nigeria and a global shelf-stable line."),
+            ("team", "How do you source your fruit?",
+             "We work directly with smallholder farmers and certified agro-processors in Mauritius and West Africa. We pay above the spot rate when seasons are tough and never accept anything that wouldn't pass the eat-it-raw test."),
+            ("team", "Are you hiring?",
+             "We grow our team in line with new market launches. Open roles are listed on the Contact page — and we always read unsolicited applications from passionate wellness/food people."),
+            ("team", "Do you run nutrition workshops?",
+             "Yes — Flourish subscribers get quarterly consults, and we host quarterly free wellness clinics in Mauritius and Lagos. Subscribe to the newsletter for dates."),
+            # INSIGHTS
+            ("insights", "Why no added sugar?",
+             "Whole fruit gives the body sugar wrapped in fibre, water, and micronutrients — the body processes that very differently to refined sugar. Add cane sugar or syrup and you bypass that biology completely."),
+            ("insights", "Are smoothies as good as eating whole fruit?",
+             "Nearly. Blending preserves the fibre (unlike juicing), so the glucose hit is buffered. We recommend pairing smoothies with food and chewing slowly — the brain registers calories better that way."),
+            ("insights", "What makes a wellness shot work?",
+             "Concentration. A 60ml shot packs the immune-active compounds of a much larger drink — ginger, turmeric, citrus, sometimes Manuka. Taken daily for 7+ days, the cumulative effect is measurable."),
+            ("insights", "Are your products certified?",
+             "Our Mauritius kitchen is HACCP-certified. Our Nigerian production runs to NAFDAC-aligned standards. Shelf-stable products carry batch numbers and best-before dates."),
+        ]
+        for i, (cat, q, a) in enumerate(faqs):
+            conn.execute("INSERT INTO faqs (category, question, answer, sort_order) VALUES (?,?,?,?)",
+                         (cat, q, a, i))
+
+    # ─── Team members ─────────────────────────────────────────────────────
+    if not conn.execute("SELECT 1 FROM team_members LIMIT 1").fetchone():
+        team = [
+            ("Kelly Okonkwo", "Founder & Head of Blends",
+             "Trained chef and wellness nut. Believes the best medicine is a fridge full of fruit.",
+             "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=400&q=80"),
+            ("Aisha Rambodun", "Mauritius Kitchen Lead",
+             "Runs the Pamplemousses kitchen. The reason your smoothie arrives at 8am sharp.",
+             "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=400&q=80"),
+            ("Tobi Adelani", "Lagos Operations",
+             "Logistics ninja. Has personally delivered through every rainy season since launch.",
+             "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?w=400&q=80"),
+            ("Maya Chen", "Wellness Nutritionist",
+             "RDN. Designs our seasonal menus around real nutrition science, not trends.",
+             "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400&q=80"),
+        ]
+        for i, (n, r, b, a) in enumerate(team):
+            conn.execute("""INSERT INTO team_members (full_name, role, bio, avatar_url, sort_order)
+                            VALUES (?,?,?,?,?)""", (n, r, b, a, i))
+
+    # ─── Verified customer testimonials (homepage carousel) ───────────────
+    # Attach to the most-reviewed products if any exist, otherwise to any
+    # product — we only seed when there are zero reviews with avatar_url.
+    if conn.execute("SELECT 1 FROM products LIMIT 1").fetchone() and \
+       not conn.execute("SELECT 1 FROM reviews WHERE avatar_url IS NOT NULL LIMIT 1").fetchone():
+        pids = [r["id"] for r in conn.execute("SELECT id FROM products ORDER BY id LIMIT 6").fetchall()]
+        if pids:
+            testimonials = [
+                ("Marie-Claire D.", "Pamplemousses, MU", 5,
+                 "Morning routine: KCBlendz Glow Splash + 20-min walk. Skin's clearer, energy lasts till lunch.",
+                 "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&q=80"),
+                ("Priya R.", "Port Louis, MU", 5,
+                 "The Build-Your-Blend feature is genius. My custom post-gym shake has replaced three different supplements.",
+                 "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&q=80"),
+                ("Marcus L.", "London, UK", 5,
+                 "Dried mango powder arrived in perfect condition via DHL. Stirring it into oatmeal has become non-negotiable.",
+                 "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&q=80"),
+                ("Chinwe O.", "Lagos, NG", 5,
+                 "Same-day delivery in Lekki is a game-changer. The Power Boost is officially my training-day fuel.",
+                 "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=200&q=80"),
+                ("Ravi P.", "Curepipe, MU", 4,
+                 "Kids ask for the Kiddies Pack by name now. No more fighting over fizzy drinks at lunch.",
+                 "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&q=80"),
+                ("Linda S.", "Toronto, CA", 5,
+                 "Subscribed to Bloom in January. By March I'd weaned myself off my afternoon coffee. Total win.",
+                 "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&q=80"),
+            ]
+            for i, (name, loc, rating, body, avatar) in enumerate(testimonials):
+                pid = pids[i % len(pids)]
+                conn.execute("""INSERT INTO reviews (product_id, author_name, rating, title, body,
+                                is_verified_buyer, avatar_url)
+                                VALUES (?,?,?,?,?,?,?)""",
+                             (pid, name, rating, loc, body, 1, avatar))
+
+    # ─── Promo codes ──────────────────────────────────────────────────────
+    if not conn.execute("SELECT 1 FROM promo_codes LIMIT 1").fetchone():
+        promos = [
+            # code, description, type, value, min_subtotal, region, max_uses
+            ("WELCOME10", "10% off your first order — new customers", "percent", 10, 0, None, None),
+            ("FRESH15", "15% off orders over the local free-delivery threshold", "percent", 15, 500, None, None),
+            ("WELLNESS5", "Flat discount on any wellness order", "fixed", 50, 300, "MU", None),
+            ("LAGOS2000", "₦2,000 off Lagos orders over ₦20,000", "fixed", 2000, 20000, "NG", None),
+        ]
+        for code, desc, dtype, val, minsub, region, maxu in promos:
+            conn.execute("""INSERT INTO promo_codes
+                (code, description, discount_type, discount_value, min_subtotal,
+                 region, max_uses, is_active)
+                VALUES (?,?,?,?,?,?,?,1)""",
+                (code, desc, dtype, val, minsub, region, maxu))
+
+    conn.commit()
+    conn.close()
 # HELPERS — region, currency, auth, security
 # ─────────────────────────────────────────────────────────────────────────────
 REGIONS = {
@@ -983,6 +1289,129 @@ def notify_admins(title, body=None, link=None):
     db.commit()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# v2 HELPERS — order tracking, promo codes, nav categories, etc.
+# ─────────────────────────────────────────────────────────────────────────────
+def record_order_event(order_id, status, note=None, actor="system"):
+    """Append an entry to the order's tracking timeline. Idempotent — the same
+    (order_id, status) pair is only ever recorded once so the timeline stays
+    clean even if a downstream caller fires the same transition twice."""
+    db = get_db()
+    existing = db.execute("""SELECT 1 FROM order_status_events
+        WHERE order_id=? AND status=? LIMIT 1""", (order_id, status)).fetchone()
+    if existing:
+        return
+    db.execute("""INSERT INTO order_status_events (order_id, status, note, actor)
+        VALUES (?,?,?,?)""", (order_id, status, note, actor))
+    db.commit()
+
+
+def activate_subscription_for_order(order_id):
+    """If the given order is a subscription order that just got paid, activate
+    the linked subscription (and cancel any previous active one for the user)."""
+    db = get_db()
+    o = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not o or not o["is_subscription"] or not o["subscription_id"]:
+        return
+    sub = db.execute("SELECT * FROM subscriptions WHERE id=?",
+                     (o["subscription_id"],)).fetchone()
+    if not sub or sub["status"] == "active":
+        return
+    # one active sub per user — cancel the prior active one
+    db.execute("""UPDATE subscriptions SET status='cancelled',
+        cancelled_at=datetime('now')
+        WHERE user_id=? AND status='active' AND id != ?""",
+        (sub["user_id"], sub["id"]))
+    db.execute("""UPDATE subscriptions SET status='active',
+        started_at=datetime('now') WHERE id=?""", (sub["id"],))
+    # Also flip the linked order to 'delivered' so the timeline's third step
+    # ("Subscription active") shows as the current step.
+    db.execute("""UPDATE orders SET order_status='delivered',
+        updated_at=datetime('now') WHERE id=?""", (order_id,))
+    db.commit()
+    record_order_event(order_id, "delivered",
+                       note="Subscription activated", actor="system")
+    plan = db.execute("SELECT name FROM subscription_plans WHERE id=?",
+                       (sub["plan_id"],)).fetchone()
+    plan_name = plan["name"] if plan else "your plan"
+    notify_admins(f"New subscription: {plan_name} ({sub['billing_cycle']})",
+                  f"{o['full_name']} subscribed and paid.",
+                  url_for("admin_user_detail", uid=sub["user_id"]))
+    notify(sub["user_id"], f"Welcome to {plan_name}!",
+           f"Your {sub['billing_cycle']} subscription is active. "
+           f"Manage it any time from your account.",
+           url_for("account_dashboard"))
+    audit("subscription.activated", "subscriptions", sub["id"],
+          {"order_id": order_id})
+
+
+def generate_tracking_token():
+    """Short, URL-safe token used in the public tracking URL emailed to guests."""
+    return secrets.token_urlsafe(12)
+
+
+def resolve_promo_code(code, subtotal, region):
+    """Return (discount_amount, promo_row, error_message). The promo is only
+    applied if active, in-window, region-applicable, under usage cap, and the
+    subtotal meets the minimum. Returns (0, None, 'reason') if not applicable.
+    """
+    if not code:
+        return 0.0, None, None
+    code = code.strip().upper()
+    db = get_db()
+    p = db.execute("SELECT * FROM promo_codes WHERE code=? COLLATE NOCASE", (code,)).fetchone()
+    if not p:
+        return 0.0, None, "Promo code not found."
+    if not p["is_active"]:
+        return 0.0, None, "This promo code is no longer active."
+    now = datetime.now().isoformat(timespec="seconds")
+    if p["starts_at"] and now < p["starts_at"]:
+        return 0.0, None, "This promo code is not yet active."
+    if p["ends_at"] and now > p["ends_at"]:
+        return 0.0, None, "This promo code has expired."
+    if p["region"] and p["region"] != region:
+        return 0.0, None, "This promo code is not available in your region."
+    if p["max_uses"] is not None and p["used_count"] >= p["max_uses"]:
+        return 0.0, None, "This promo code has reached its usage limit."
+    if subtotal < (p["min_subtotal"] or 0):
+        return 0.0, None, f"Minimum subtotal of {format_money(p['min_subtotal'], region)} required."
+    if p["discount_type"] == "percent":
+        discount = round(subtotal * (p["discount_value"] / 100.0), 2)
+    else:
+        discount = float(p["discount_value"])
+    # never refund more than the subtotal
+    return min(discount, subtotal), p, None
+
+
+def get_active_nav_categories():
+    """Return the small, curated set of categories shown in the navbar.
+    Pulls live from the DB (so admin changes propagate) but caches on `g`
+    for the duration of the request — fixes the 'navbar doesn't update'
+    bug without one DB hit per template include."""
+    if "_nav_cats" not in g:
+        g._nav_cats = get_db().execute("""SELECT slug, name FROM categories
+            WHERE is_active=1 AND COALESCE(is_deleted,0)=0
+            ORDER BY sort_order LIMIT 7""").fetchall()
+    return g._nav_cats
+
+
+def admin_unread_counts():
+    """Two cheap COUNT(*) queries used by the admin top-bar polling endpoint
+    and the initial page render. Returns dict with notification + message counts."""
+    db = get_db()
+    u = current_user()
+    if not u:
+        return {"notifs": 0, "messages": 0, "orders_pending": 0}
+    return {
+        "notifs": db.execute("""SELECT COUNT(*) c FROM notifications
+            WHERE audience='admin' AND user_id=? AND is_read=0""", (u["id"],)).fetchone()["c"],
+        "messages": db.execute("""SELECT COUNT(*) c FROM contact_messages
+            WHERE is_handled=0""").fetchone()["c"],
+        "orders_pending": db.execute("""SELECT COUNT(*) c FROM orders
+            WHERE order_status='pending'""").fetchone()["c"],
+    }
+
+
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_IMAGE_EXT
 
@@ -1041,6 +1470,108 @@ def valid_phone(s):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MFA — TOTP (RFC 6238) implemented with stdlib only
+# ─────────────────────────────────────────────────────────────────────────────
+import base64 as _b64
+import struct as _struct
+import hashlib as _hashlib
+import time as _time
+
+
+def generate_mfa_secret():
+    """Random 20-byte secret, base32-encoded (no padding) — what Google
+    Authenticator and similar apps expect."""
+    return _b64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _totp_code(secret_b32, t=None, step=30, digits=6):
+    """RFC 6238 / 4226 TOTP. Returns a zero-padded 6-digit string."""
+    if t is None:
+        t = int(_time.time())
+    # Pad base32 secret back to a multiple of 8
+    s = secret_b32.upper().replace(" ", "")
+    s += "=" * ((-len(s)) % 8)
+    key = _b64.b32decode(s)
+    counter = t // step
+    msg = _struct.pack(">Q", counter)
+    h = hmac.new(key, msg, _hashlib.sha1).digest()
+    offset = h[-1] & 0x0F
+    code_int = (_struct.unpack(">I", h[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code_int).zfill(digits)
+
+
+def verify_totp(secret_b32, code, window=1):
+    """Verify with ±`window` steps of clock drift tolerance. `code` may have
+    spaces or be a string of digits; non-digits are stripped. Returns True on
+    a valid current-or-adjacent code. Uses hmac.compare_digest to avoid
+    timing-side-channels."""
+    if not secret_b32 or not code:
+        return False
+    code = "".join(c for c in str(code) if c.isdigit())
+    if len(code) != 6:
+        return False
+    now = int(_time.time())
+    step = 30
+    for delta in range(-window, window + 1):
+        if hmac.compare_digest(_totp_code(secret_b32, now + delta * step), code):
+            return True
+    return False
+
+
+def mfa_otpauth_uri(secret_b32, email, issuer="KCBlendz"):
+    """Build the `otpauth://` URI a QR-code library renders into a scannable code."""
+    from urllib.parse import quote
+    label = f"{issuer}:{email}"
+    return (f"otpauth://totp/{quote(label)}"
+            f"?secret={secret_b32}&issuer={quote(issuer)}&algorithm=SHA1&digits=6&period=30")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RATE LIMIT — in-process token bucket; prevents brute force on /login,/register
+# ─────────────────────────────────────────────────────────────────────────────
+_RL_BUCKETS = {}   # key -> (window_started_at, count)
+_RL_LOCK = __import__("threading").Lock()
+
+
+def rate_limited(key, *, max_attempts=5, window_seconds=60):
+    """Returns (allowed: bool, retry_after_seconds: int). Resets count after
+    `window_seconds` of quiet. Per-process — fine for single-worker gunicorn;
+    if you scale to multiple workers, this becomes per-worker which is still
+    a useful floor but not a global cap. We intentionally keep it in-memory
+    so the app has no Redis/DB dependency for the security floor."""
+    # Tests + local dev share an IP across many requests; skip the floor
+    # entirely under app.testing/app.debug so test order can't cause spurious
+    # 429s and devs can hit /login freely while iterating.
+    if app.testing or app.debug:
+        return True, 0
+    now = _time.time()
+    with _RL_LOCK:
+        window_start, count = _RL_BUCKETS.get(key, (now, 0))
+        if now - window_start > window_seconds:
+            window_start, count = now, 0
+        count += 1
+        _RL_BUCKETS[key] = (window_start, count)
+        # GC: opportunistically discard old buckets every ~200 calls
+        if len(_RL_BUCKETS) > 5000:
+            cutoff = now - max(window_seconds * 4, 600)
+            for k in list(_RL_BUCKETS.keys()):
+                if _RL_BUCKETS[k][0] < cutoff:
+                    del _RL_BUCKETS[k]
+    if count > max_attempts:
+        return False, int(window_seconds - (now - window_start))
+    return True, 0
+
+
+def rate_limit_client_key(prefix):
+    """Stable per-client key for rate-limiting. Includes the client IP so
+    different attackers don't share the same bucket. Falls back gracefully
+    when X-Forwarded-For is absent."""
+    ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+          or request.remote_addr or "0.0.0.0")
+    return f"{prefix}:{ip}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CART — server-side cart kept in session
 # ─────────────────────────────────────────────────────────────────────────────
 def get_cart():
@@ -1077,6 +1608,8 @@ def inject_globals():
         format_money=format_money,
         csrf_token=csrf_token,
         current_year=datetime.now().year,
+        nav_categories=get_active_nav_categories,
+        admin_unread=admin_unread_counts,
     )
 
 
@@ -1121,12 +1654,28 @@ def home():
         ORDER BY id LIMIT 8""").fetchall()
     new_in = db.execute(f"""SELECT * FROM products WHERE is_active=1 AND {avail}=1 AND is_new=1
         ORDER BY id LIMIT 8""").fetchall()
-    categories = db.execute("SELECT * FROM categories WHERE is_active=1 ORDER BY sort_order").fetchall()
+    # v2: trending = most-ordered in last 30 days
+    trending = db.execute(f"""SELECT p.* FROM products p
+        JOIN order_items oi ON oi.product_id = p.id
+        JOIN orders o ON o.id = oi.order_id
+        WHERE p.is_active=1 AND p.{avail}=1
+          AND date(o.created_at) >= date('now','-30 days')
+        GROUP BY p.id ORDER BY SUM(oi.quantity) DESC LIMIT 8""").fetchall()
+    categories = db.execute("""SELECT * FROM categories
+        WHERE is_active=1 AND COALESCE(is_deleted,0)=0 ORDER BY sort_order""").fetchall()
     posts = db.execute("SELECT * FROM blog_posts WHERE is_published=1 ORDER BY created_at DESC LIMIT 4").fetchall()
+    sub_plans = db.execute("""SELECT * FROM subscription_plans
+        WHERE is_active=1 ORDER BY sort_order, id""").fetchall()
+    # v2: real customer testimonials (with avatars), highest-rated first
+    testimonials = db.execute("""SELECT r.*, p.name AS product_name, p.slug AS product_slug
+        FROM reviews r LEFT JOIN products p ON p.id = r.product_id
+        WHERE r.is_approved=1 AND r.avatar_url IS NOT NULL
+        ORDER BY r.rating DESC, r.created_at DESC LIMIT 9""").fetchall()
     return render_template(
         "public/home.html",
-        featured=featured, bestsellers=bestsellers, new_in=new_in,
+        featured=featured, bestsellers=bestsellers, new_in=new_in, trending=trending,
         categories=categories, posts=posts, price_field=price,
+        testimonials=testimonials, sub_plans=sub_plans,
     )
 
 
@@ -1306,7 +1855,7 @@ def builder_add_to_cart():
     cart["items"].append({
         "kind": "custom",
         "name": save_name or "Custom Smoothie",
-        "image": url_for("static", filename="img/custom-cup.svg"),
+        "image": image_for_blend(grouped.get("fruit", [])),
         "meta": meta,
         "unit_price": unit_price,
         "quantity": qty,
@@ -1391,14 +1940,51 @@ def cart_remove():
     return redirect(url_for("cart"))
 
 
-def delivery_fee_for(region, city=None):
-    if region == "NG":
-        return 1500.0  # Pamplemousses zone — admin can override per-zone in production
-    if region == "MU":
-        return 80.0
-    if region == "GL":
-        return 12.99
-    return 0.0
+# ─────────────────────────────────────────────────────────────────────────────
+# CUSTOM-BLEND IMAGERY
+# Picks a representative photo for a built smoothie from its dominant (first)
+# fruit so the cart / receipt / order pages show something appetising instead
+# of a generic cup. Falls back to a neutral smoothie photo.
+# ─────────────────────────────────────────────────────────────────────────────
+DEFAULT_BLEND_IMAGE = "https://images.unsplash.com/photo-1610970881699-44a5587cabec?w=800&q=80"
+
+CUSTOM_BLEND_IMAGE_BY_FRUIT = {
+    "Mango":       "https://images.unsplash.com/photo-1605027990121-cbae9e0642df?w=800&q=80",
+    "Banana":      "https://images.unsplash.com/photo-1553530666-ba11a7da3888?w=800&q=80",
+    "Strawberry":  "https://images.unsplash.com/photo-1505252585461-04db1eb84625?w=800&q=80",
+    "Pineapple":   "https://images.unsplash.com/photo-1502741338009-cac2772e18bc?w=800&q=80",
+    "Watermelon":  "https://images.unsplash.com/photo-1623065422902-30a2d299bbe4?w=800&q=80",
+    "Orange":      "https://images.unsplash.com/photo-1546173159-315724a31696?w=800&q=80",
+    "Apple":       "https://images.unsplash.com/photo-1638176066757-37c50b3d2db9?w=800&q=80",
+    "Kiwi":        "https://images.unsplash.com/photo-1585059895524-72359e06133a?w=800&q=80",
+    "Blueberry":   "https://images.unsplash.com/photo-1498557850523-fd3d118b962e?w=800&q=80",
+    "Avocado":     "https://images.unsplash.com/photo-1601039641847-7857b994d704?w=800&q=80",
+    "Papaya":      "https://images.unsplash.com/photo-1517282009859-f000ec3b26fe?w=800&q=80",
+    "Passion Fruit": "https://images.unsplash.com/photo-1604495772376-9657f0035eb5?w=800&q=80",
+}
+
+
+def image_for_blend(fruits):
+    """Return an image URL for a custom blend based on its dominant (first)
+    fruit. Empty list or unknown fruit → DEFAULT_BLEND_IMAGE."""
+    if not fruits:
+        return DEFAULT_BLEND_IMAGE
+    first = (fruits[0] or "").strip().title()
+    return CUSTOM_BLEND_IMAGE_BY_FRUIT.get(first, DEFAULT_BLEND_IMAGE)
+
+
+def free_delivery_threshold(region):
+    """Order subtotal at/above which local delivery is free.
+    Mirrors the announcement bar (NG ₦15,000 · MU Rs 500 · GL $50)."""
+    return {"NG": 15000.0, "MU": 500.0, "GL": 50.0}.get(region, 0.0)
+
+
+def delivery_fee_for(region, city=None, subtotal=None):
+    base = {"NG": 1500.0, "MU": 80.0, "GL": 12.99}.get(region, 0.0)
+    # Free local delivery once the subtotal clears the regional threshold.
+    if subtotal is not None and subtotal >= free_delivery_threshold(region):
+        return 0.0
+    return base
 
 
 @app.route("/checkout", methods=["GET", "POST"])
@@ -1441,18 +2027,32 @@ def checkout():
             for e in errors:
                 flash(e, "error")
             return render_template("public/checkout.html", cart=cart, subtotal=subtotal,
-                                   delivery_fee=delivery_fee_for(region), region=region,
+                                   delivery_fee=delivery_fee_for(region, subtotal=subtotal), region=region,
                                    currency=currency, form=request.form)
 
-        delivery_fee = delivery_fee_for(region, city) if fulfillment == "delivery" else 0.0
-        total = subtotal + delivery_fee
+        delivery_fee = delivery_fee_for(region, city, subtotal) if fulfillment == "delivery" else 0.0
+
+        # v2 — apply promo code if provided
+        promo_input = request.form.get("promo_code", "").strip().upper()
+        discount = 0.0
+        promo_row = None
+        if promo_input:
+            discount, promo_row, perr = resolve_promo_code(promo_input, subtotal, region)
+            if perr:
+                flash(perr, "error")
+                return render_template("public/checkout.html", cart=cart, subtotal=subtotal,
+                                       delivery_fee=delivery_fee, region=region,
+                                       currency=currency, form=request.form)
+
+        total = max(0.0, subtotal - discount) + delivery_fee
+        tracking_token = generate_tracking_token()
 
         order_number = f"KCB-{datetime.now().strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
         db = get_db()
         db.execute("""INSERT INTO orders (order_number, user_id, guest_email, full_name, email, phone, region, currency,
             subtotal, delivery_fee, total, fulfillment_type, delivery_address, delivery_city, delivery_state, delivery_country,
-            delivery_date, delivery_slot, notes, payment_method)
-            VALUES (?,?,?,?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?)""", (
+            delivery_date, delivery_slot, notes, payment_method, promo_code, discount_amount, tracking_token)
+            VALUES (?,?,?,?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?, ?,?,?)""", (
             order_number, u["id"] if u else None, None if u else email,
             full_name, email, phone, region, currency,
             subtotal, delivery_fee, total, fulfillment,
@@ -1460,7 +2060,8 @@ def checkout():
             city if fulfillment == "delivery" else None,
             state if fulfillment == "delivery" else None,
             country if fulfillment == "delivery" else None,
-            delivery_date or None, delivery_slot or None, notes or None, payment_method
+            delivery_date or None, delivery_slot or None, notes or None, payment_method,
+            promo_row["code"] if promo_row else None, discount, tracking_token,
         ))
         order_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -1478,7 +2079,13 @@ def checkout():
                 item["quantity"],
                 float(item["unit_price"]) * int(item["quantity"]),
             ))
+
+        if promo_row:
+            db.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id=?",
+                       (promo_row["id"],))
         db.commit()
+
+        record_order_event(order_id, "pending", note="Order placed", actor="customer")
 
         # Clear cart
         session["cart"] = {"items": [], "region": region}
@@ -1492,7 +2099,7 @@ def checkout():
         return redirect(url_for("payment", order_id=order_id))
 
     return render_template("public/checkout.html", cart=cart, subtotal=subtotal,
-                           delivery_fee=delivery_fee_for(region), region=region,
+                           delivery_fee=delivery_fee_for(region, subtotal=subtotal), region=region,
                            currency=currency, form={})
 
 
@@ -1582,7 +2189,57 @@ def payment_process(order_id):
     if not order:
         abort(404)
     method = order["payment_method"]
-    gateway = {"card": "paystack", "paypal": "paypal", "bank_transfer": "manual"}.get(method, "manual")
+    # Card is processed by Paystack in Nigeria and a card gateway elsewhere.
+    if method == "card":
+        gateway = "paystack" if order["region"] == "NG" else "card_gateway"
+    elif method == "paypal":
+        gateway = "paypal"
+    else:
+        gateway = "manual"
+
+    if method == "paypal":
+        # Simulated PayPal hosted authentication. In production this is the
+        # PayPal redirect/return; here we validate the sandbox login.
+        pp_email = request.form.get("paypal_email", "").strip()
+        pp_pw = request.form.get("paypal_password", "")
+        if not valid_email(pp_email) or len(pp_pw) < 6:
+            flash("PayPal authentication failed. Check your email and password.", "error")
+            return redirect(url_for("payment", order_id=order_id))
+        reference = f"PAYPAL-{secrets.token_hex(6).upper()}"
+        meta = json.dumps({"paypal_email": pp_email, "method": "paypal"})
+        db.execute("""UPDATE orders SET payment_status='paid', payment_reference=?,
+                      order_status=?, updated_at=datetime('now') WHERE id=?""",
+                   (reference,
+                    "delivered" if order["is_subscription"] else "processing",
+                    order_id))
+        db.execute("""INSERT INTO payments (order_id, method, gateway, reference, amount, currency, status, raw_payload)
+                      VALUES (?,?,?,?,?,?,?,?)""",
+                   (order_id, method, gateway, reference, order["total"], order["currency"], "success", meta))
+        db.commit()
+        record_order_event(order_id, "paid", note="Payment via PayPal", actor="system")
+        if not order["is_subscription"]:
+            # Subscription orders don't go through the kitchen pipeline.
+            record_order_event(order_id, "processing", note="Sent to kitchen", actor="system")
+        if order["user_id"]:
+            if order["is_subscription"]:
+                notify(order["user_id"], "Subscription payment received",
+                       f"Your PayPal payment of {format_money(order['total'], order['region'])} has been confirmed — your subscription is being activated.",
+                       url_for("account_dashboard"))
+            else:
+                notify(order["user_id"], f"Payment received for {order['order_number']}",
+                       f"Thanks — your PayPal payment of {format_money(order['total'], order['region'])} has been confirmed.",
+                       url_for("account_order_detail", order_id=order_id))
+        if order["is_subscription"]:
+            notify_admins(f"Subscription paid: {order['order_number']}",
+                          f"{order['full_name']} paid {format_money(order['total'], order['region'])} via PayPal for a subscription.",
+                          url_for("admin_subscriptions"))
+        else:
+            notify_admins(f"Payment received: {order['order_number']}",
+                          f"{order['full_name']} paid {format_money(order['total'], order['region'])} via PayPal.",
+                          url_for("admin_order_detail", order_id=order_id))
+        audit("order.paid", "order", order_id, {"reference": reference, "method": "paypal"})
+        activate_subscription_for_order(order_id)
+        return redirect(url_for("order_thanks", order_id=order_id))
 
     if method == "bank_transfer":
         # require proof upload
@@ -1598,39 +2255,59 @@ def payment_process(order_id):
                    (order_id, method, gateway, f"TRF-{secrets.token_hex(6).upper()}",
                     order["total"], order["currency"], "awaiting_verification"))
         db.commit()
+        record_order_event(order_id, "processing",
+                           note="Bank transfer proof uploaded — awaiting verification",
+                           actor="customer")
         flash("Proof of payment uploaded. Our team will verify within 12 hours.", "success")
         notify_admins(f"Bank transfer for {order['order_number']}",
                       "A customer uploaded proof of bank transfer. Verify in admin.",
                       url_for("admin_order_detail", order_id=order_id))
         return redirect(url_for("order_thanks", order_id=order_id))
 
-    # Card / PayPal: collect real card data, validate, then mark paid (sandbox).
+    # Card: collect real card data, validate, then mark paid (sandbox).
     ok, errors, card = validate_card_form(request.form)
     if not ok:
         for e in errors: flash(e, "error")
         return redirect(url_for("payment", order_id=order_id))
 
     # Build a realistic reference and store only last4 + brand (never the full PAN).
-    prefix = "PSK" if method == "card" else "PYP"
+    prefix = "PSK" if gateway == "paystack" else "CARD"
     reference = f"{prefix}-{secrets.token_hex(6).upper()}"
     meta = json.dumps({"brand": card["brand"], "last4": card["last4"], "name": card["name"]})
 
-    db.execute("""UPDATE orders SET payment_status='paid', payment_reference=?, order_status='processing',
-                  updated_at=datetime('now') WHERE id=?""", (reference, order_id))
+    db.execute("""UPDATE orders SET payment_status='paid', payment_reference=?,
+                  order_status=?, updated_at=datetime('now') WHERE id=?""",
+               (reference,
+                "delivered" if order["is_subscription"] else "processing",
+                order_id))
     db.execute("""INSERT INTO payments (order_id, method, gateway, reference, amount, currency, status, raw_payload)
                   VALUES (?,?,?,?,?,?,?,?)""",
                (order_id, method, gateway, reference, order["total"], order["currency"], "success", meta))
     db.commit()
+    record_order_event(order_id, "paid", note=f"Payment via {method}", actor="system")
+    if not order["is_subscription"]:
+        record_order_event(order_id, "processing", note="Sent to kitchen", actor="system")
 
     if order["user_id"]:
-        notify(order["user_id"], f"Payment received for {order['order_number']}",
-               f"Thanks — your payment of {format_money(order['total'], order['region'])} has been confirmed.",
-               url_for("account_order_detail", order_id=order_id))
-    notify_admins(f"Payment received: {order['order_number']}",
-                  f"{order['full_name']} paid {format_money(order['total'], order['region'])}.",
-                  url_for("admin_order_detail", order_id=order_id))
+        if order["is_subscription"]:
+            notify(order["user_id"], "Subscription payment received",
+                   f"Your payment of {format_money(order['total'], order['region'])} has been confirmed — your subscription is being activated.",
+                   url_for("account_dashboard"))
+        else:
+            notify(order["user_id"], f"Payment received for {order['order_number']}",
+                   f"Thanks — your payment of {format_money(order['total'], order['region'])} has been confirmed.",
+                   url_for("account_order_detail", order_id=order_id))
+    if order["is_subscription"]:
+        notify_admins(f"Subscription paid: {order['order_number']}",
+                      f"{order['full_name']} paid {format_money(order['total'], order['region'])} for a subscription.",
+                      url_for("admin_subscriptions"))
+    else:
+        notify_admins(f"Payment received: {order['order_number']}",
+                      f"{order['full_name']} paid {format_money(order['total'], order['region'])}.",
+                      url_for("admin_order_detail", order_id=order_id))
     audit("order.paid", "order", order_id, {"reference": reference, "method": method,
                                               "brand": card["brand"], "last4": card["last4"]})
+    activate_subscription_for_order(order_id)
     return redirect(url_for("order_thanks", order_id=order_id))
 
 
@@ -1648,10 +2325,29 @@ def order_thanks(order_id):
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/wellness")
 def wellness():
-    posts = get_db().execute(
-        "SELECT * FROM blog_posts WHERE is_published=1 ORDER BY created_at DESC"
-    ).fetchall()
-    return render_template("public/wellness.html", posts=posts)
+    db = get_db()
+    q = request.args.get("q", "").strip()
+    cat = request.args.get("cat", "").strip().upper()
+    sql = "SELECT * FROM blog_posts WHERE is_published=1"
+    params = []
+    if q:
+        sql += " AND (title LIKE ? OR subtitle LIKE ? OR content LIKE ?)"
+        params += [f"%{q}%", f"%{q}%", f"%{q}%"]
+    if cat:
+        sql += " AND category=?"
+        params.append(cat)
+    sql += " ORDER BY created_at DESC"
+    posts = db.execute(sql, params).fetchall()
+    # Trending = newest 5 (when we have view counts we'll use those instead)
+    trending = db.execute("""SELECT * FROM blog_posts WHERE is_published=1
+        ORDER BY created_at DESC LIMIT 5""").fetchall()
+    # Distinct categories for the filter UI
+    cats = db.execute("""SELECT category, COUNT(*) n FROM blog_posts
+        WHERE is_published=1 AND category IS NOT NULL
+        GROUP BY category ORDER BY n DESC""").fetchall()
+    return render_template("public/wellness.html",
+                           posts=posts, trending=trending,
+                           cats=cats, q=q, active_cat=cat)
 
 
 @app.route("/wellness/<slug>")
@@ -1670,7 +2366,11 @@ def wellness_post(slug):
 # STATIC / CONTENT PAGES
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/about")
-def about(): return render_template("public/about.html")
+def about():
+    team = get_db().execute(
+        "SELECT * FROM team_members WHERE is_active=1 ORDER BY sort_order"
+    ).fetchall()
+    return render_template("public/about.html", team=team)
 @app.route("/contact", methods=["GET", "POST"])
 def contact():
     if request.method == "POST":
@@ -1722,17 +2422,33 @@ def newsletter_subscribe():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        # Rate limit by IP first to slow brute-force without depending on email enumeration
+        ok, retry_in = rate_limited(rate_limit_client_key("login"),
+                                    max_attempts=8, window_seconds=300)
+        if not ok:
+            flash(f"Too many login attempts. Try again in {retry_in} seconds.", "error")
+            return render_template("auth/login.html", email=""), 429
+
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
-        u = get_db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        db = get_db()
+        u = db.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if not u or u["status"] != "active" or not check_password_hash(u["password_hash"], password):
             flash("Invalid email or password.", "error")
             return render_template("auth/login.html", email=email)
+
+        if u["mfa_enabled"]:
+            # Park user in pending-MFA state and redirect to the 2nd factor screen.
+            session["mfa_pending_uid"] = u["id"]
+            session["mfa_pending_next"] = request.args.get("next", "")
+            session.modified = True
+            return redirect(url_for("login_mfa"))
+
         session.clear()
         session["uid"] = u["id"]
         session.permanent = True
-        get_db().execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (u["id"],))
-        get_db().commit()
+        db.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (u["id"],))
+        db.commit()
         audit("auth.login", "user", u["id"])
         flash(f"Welcome back, {u['full_name'].split()[0]}.", "success")
         nxt = request.args.get("next") or (url_for("admin_dashboard") if u["role"] == "admin" else url_for("account_dashboard"))
@@ -1740,9 +2456,49 @@ def login():
     return render_template("auth/login.html", email="")
 
 
+@app.route("/login/mfa", methods=["GET", "POST"])
+def login_mfa():
+    """Second factor — show only after a successful password check.
+    Session key `mfa_pending_uid` is the only authorisation to be here."""
+    pending_uid = session.get("mfa_pending_uid")
+    if not pending_uid:
+        return redirect(url_for("login"))
+    db = get_db()
+    u = db.execute("SELECT * FROM users WHERE id=?", (pending_uid,)).fetchone()
+    if not u or not u["mfa_enabled"]:
+        session.pop("mfa_pending_uid", None)
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        ok, retry_in = rate_limited(rate_limit_client_key(f"mfa:{pending_uid}"),
+                                    max_attempts=6, window_seconds=300)
+        if not ok:
+            flash(f"Too many code attempts. Try again in {retry_in} seconds.", "error")
+            return render_template("auth/login_mfa.html"), 429
+        code = request.form.get("code", "").strip()
+        if verify_totp(u["mfa_secret"], code):
+            next_url = session.pop("mfa_pending_next", "") or url_for(
+                "admin_dashboard" if u["role"] == "admin" else "account_dashboard")
+            session.clear()
+            session["uid"] = u["id"]
+            session.permanent = True
+            db.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (u["id"],))
+            db.commit()
+            audit("auth.login.mfa", "user", u["id"])
+            flash(f"Welcome back, {u['full_name'].split()[0]}.", "success")
+            return redirect(next_url)
+        flash("That code didn't match. Try the latest 6 digits from your authenticator.", "error")
+    return render_template("auth/login_mfa.html")
+
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
+        ok, retry_in = rate_limited(rate_limit_client_key("register"),
+                                    max_attempts=5, window_seconds=600)
+        if not ok:
+            flash(f"Too many sign-up attempts from this network. Try again in {retry_in} seconds.", "error")
+            return render_template("auth/register.html", form=request.form), 429
         full_name = request.form.get("full_name", "").strip()
         email = request.form.get("email", "").strip().lower()
         phone = request.form.get("phone", "").strip()
@@ -1805,14 +2561,16 @@ def forgot_password():
 def account_dashboard():
     u = current_user()
     db = get_db()
+    # Show product orders here — subscription orders are surfaced separately
+    # (a customer-facing /account/subscriptions page would list those).
     recent_orders = db.execute(
-        "SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (u["id"],)
+        "SELECT * FROM orders WHERE user_id=? AND COALESCE(is_subscription,0)=0 ORDER BY created_at DESC LIMIT 5", (u["id"],)
     ).fetchall()
     saved = db.execute(
         "SELECT * FROM custom_smoothies WHERE user_id=? ORDER BY created_at DESC LIMIT 4", (u["id"],)
     ).fetchall()
     stats = db.execute(
-        "SELECT COUNT(*) AS n_orders, COALESCE(SUM(total),0) AS total_spent FROM orders WHERE user_id=? AND payment_status='paid'",
+        "SELECT COUNT(*) AS n_orders, COALESCE(SUM(total),0) AS total_spent FROM orders WHERE user_id=? AND payment_status='paid' AND COALESCE(is_subscription,0)=0",
         (u["id"],)
     ).fetchone()
     notifs = db.execute(
@@ -1827,9 +2585,42 @@ def account_dashboard():
 def account_orders():
     u = current_user()
     orders = get_db().execute(
-        "SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC", (u["id"],)
+        "SELECT * FROM orders WHERE user_id=? AND COALESCE(is_subscription,0)=0 ORDER BY created_at DESC", (u["id"],)
     ).fetchall()
     return render_template("account/orders.html", orders=orders)
+
+
+@app.route("/account/subscriptions")
+@login_required
+def account_subscriptions():
+    """Customer self-service: view active / pending / past subscriptions."""
+    u = current_user()
+    subs = get_db().execute("""SELECT s.*, sp.name AS plan_name, sp.tagline
+        FROM subscriptions s
+        JOIN subscription_plans sp ON sp.id=s.plan_id
+        WHERE s.user_id=? ORDER BY s.id DESC""", (u["id"],)).fetchall()
+    return render_template("account/subscriptions.html", subs=subs)
+
+
+@app.route("/account/subscriptions/<int:sid>/cancel", methods=["POST"])
+@login_required
+def account_subscription_cancel(sid):
+    u = current_user()
+    db = get_db()
+    s = db.execute("SELECT * FROM subscriptions WHERE id=? AND user_id=?",
+                   (sid, u["id"])).fetchone()
+    if not s:
+        abort(404)
+    if s["status"] == "active":
+        db.execute("""UPDATE subscriptions SET status='cancelled',
+            cancelled_at=datetime('now') WHERE id=?""", (sid,))
+        db.commit()
+        audit("subscription.cancel.customer", "subscriptions", sid)
+        notify_admins("Subscription cancelled by customer",
+                      f"{u['full_name']} cancelled their subscription.",
+                      url_for("admin_subscriptions"))
+        flash("Your subscription has been cancelled.", "info")
+    return redirect(url_for("account_subscriptions"))
 
 
 @app.route("/account/orders/<int:order_id>")
@@ -1840,7 +2631,12 @@ def account_order_detail(order_id):
     if not order:
         abort(404)
     items = get_db().execute("SELECT * FROM order_items WHERE order_id=?", (order_id,)).fetchall()
-    return render_template("account/order_detail.html", order=order, items=items)
+    timeline, last_status, cancelled = order_timeline(order_id)
+    refund_open = get_db().execute("""SELECT 1 FROM refund_requests
+        WHERE order_id=? AND status IN ('pending','approved')""", (order_id,)).fetchone()
+    return render_template("account/order_detail.html", order=order, items=items,
+                           timeline=timeline, last_status=last_status, cancelled=cancelled,
+                           refund_open=bool(refund_open))
 
 
 @app.route("/account/orders/<int:order_id>/reorder", methods=["POST"])
@@ -1940,7 +2736,7 @@ def account_saved_add(sid):
     cart["items"].append({
         "kind": "custom",
         "name": s["name"],
-        "image": url_for("static", filename="img/custom-cup.svg"),
+        "image": image_for_blend(grouped.get("fruit", [])),
         "meta": meta,
         "unit_price": s["price"],
         "quantity": 1,
@@ -2115,17 +2911,28 @@ def admin_dashboard():
     db = get_db()
     today = datetime.now().date().isoformat()
     month_start = datetime.now().replace(day=1).date().isoformat()
+
+    # ─── FIX: split revenue per-currency so we never sum NGN + MUR + USD as one number.
+    revenue_today_rows = db.execute("""SELECT region, currency, COALESCE(SUM(total),0) v
+        FROM orders WHERE payment_status='paid' AND date(created_at)=?
+        GROUP BY region""", (today,)).fetchall()
+    revenue_month_rows = db.execute("""SELECT region, currency, COALESCE(SUM(total),0) v
+        FROM orders WHERE payment_status='paid' AND date(created_at)>=?
+        GROUP BY region""", (month_start,)).fetchall()
+    revenue_today = {r["region"]: r["v"] for r in revenue_today_rows}
+    revenue_month = {r["region"]: r["v"] for r in revenue_month_rows}
+
     stats = {
-        "revenue_today": db.execute("SELECT COALESCE(SUM(total),0) AS v FROM orders WHERE payment_status='paid' AND date(created_at)=?", (today,)).fetchone()["v"],
-        "revenue_month": db.execute("SELECT COALESCE(SUM(total),0) AS v FROM orders WHERE payment_status='paid' AND date(created_at)>=?", (month_start,)).fetchone()["v"],
-        "orders_today": db.execute("SELECT COUNT(*) AS v FROM orders WHERE date(created_at)=?", (today,)).fetchone()["v"],
-        "orders_month": db.execute("SELECT COUNT(*) AS v FROM orders WHERE date(created_at)>=?", (month_start,)).fetchone()["v"],
-        "customers": db.execute("SELECT COUNT(*) AS v FROM users WHERE role='customer' AND status='active'").fetchone()["v"],
-        "products": db.execute("SELECT COUNT(*) AS v FROM products WHERE is_active=1").fetchone()["v"],
+        "revenue_today": revenue_today,        # {region -> amount in that region's currency}
+        "revenue_month": revenue_month,
+        "orders_today":  db.execute("SELECT COUNT(*) v FROM orders WHERE date(created_at)=?", (today,)).fetchone()["v"],
+        "orders_month":  db.execute("SELECT COUNT(*) v FROM orders WHERE date(created_at)>=?", (month_start,)).fetchone()["v"],
+        "customers":     db.execute("SELECT COUNT(*) v FROM users WHERE role='customer' AND status='active'").fetchone()["v"],
+        "products":      db.execute("SELECT COUNT(*) v FROM products WHERE is_active=1").fetchone()["v"],
     }
-    recent_orders = db.execute("SELECT * FROM orders ORDER BY created_at DESC LIMIT 10").fetchall()
+    recent_orders = db.execute("SELECT * FROM orders WHERE COALESCE(is_subscription,0)=0 ORDER BY created_at DESC LIMIT 10").fetchall()
     recent_users = db.execute("SELECT * FROM users WHERE role='customer' ORDER BY created_at DESC LIMIT 5").fetchall()
-    pending_orders = db.execute("SELECT COUNT(*) AS v FROM orders WHERE order_status='pending'").fetchone()["v"]
+    pending_orders = db.execute("SELECT COUNT(*) AS v FROM orders WHERE order_status='pending' AND COALESCE(is_subscription,0)=0").fetchone()["v"]
     notifs = db.execute("SELECT * FROM notifications WHERE audience='admin' ORDER BY created_at DESC LIMIT 8").fetchall()
     # last 7 days revenue by region for chart
     last7_ng = db.execute("""SELECT date(created_at) AS d, COALESCE(SUM(total),0) AS v
@@ -2237,28 +3044,96 @@ def admin_product_save(p, categories):
     return redirect(url_for("admin_products"))
 
 
-@app.route("/admin/products/<int:pid>/delete", methods=["POST"])
+@app.route("/admin/products/<int:pid>/toggle", methods=["POST"])
 @admin_required
-def admin_product_delete(pid):
-    get_db().execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
-    get_db().commit()
-    audit("product.soft_delete", "product", pid)
-    flash("Product disabled (soft-delete).", "info")
+def admin_product_toggle(pid):
+    """Enable / disable a product. Disabled products are hidden from the
+    storefront but kept in the DB so historical orders still resolve."""
+    db = get_db()
+    p = db.execute("SELECT is_active, name FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        abort(404)
+    new_state = 0 if p["is_active"] else 1
+    db.execute("UPDATE products SET is_active=? WHERE id=?", (new_state, pid))
+    db.commit()
+    audit("product.toggle", "product", pid, {"is_active": new_state})
+    flash(f"{p['name']} {'enabled' if new_state else 'disabled'}.", "info")
     return redirect(url_for("admin_products"))
 
 
-# Categories management (inline)
+@app.route("/admin/products/<int:pid>/delete", methods=["POST"])
+@admin_required
+def admin_product_delete(pid):
+    """Hard-delete a product if it has no order history; otherwise soft-delete
+    (is_active=0) so existing orders keep resolving cleanly."""
+    db = get_db()
+    p = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        abort(404)
+    in_use = db.execute(
+        "SELECT 1 FROM order_items WHERE product_id=? LIMIT 1", (pid,)
+    ).fetchone()
+    if in_use:
+        db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
+        db.commit()
+        audit("product.soft_delete", "product", pid)
+        flash(f"{p['name']} is in past orders — disabled instead of deleted.", "info")
+    else:
+        db.execute("DELETE FROM reviews WHERE product_id=?", (pid,))
+        db.execute("DELETE FROM products WHERE id=?", (pid,))
+        db.commit()
+        audit("product.delete", "product", pid)
+        flash(f"{p['name']} deleted.", "info")
+    return redirect(url_for("admin_products"))
+
+
+# Categories management (full CRUD)
 @app.route("/admin/categories", methods=["GET", "POST"])
 @admin_required
 def admin_categories():
+    db = get_db()
     if request.method == "POST":
-        slug = re.sub(r"[^a-z0-9]+", "-", request.form.get("name", "").lower()).strip("-")
-        get_db().execute("INSERT INTO categories (slug, name, description) VALUES (?,?,?)",
-                         (slug, request.form.get("name", "").strip(), request.form.get("description", "").strip()))
-        get_db().commit()
-        flash("Category added.", "success")
+        action = request.form.get("action", "create")
+        if action == "create":
+            name = request.form.get("name", "").strip()
+            if name:
+                slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                # ensure unique slug
+                if db.execute("SELECT 1 FROM categories WHERE slug=?", (slug,)).fetchone():
+                    slug = f"{slug}-{secrets.token_hex(2)}"
+                db.execute("""INSERT INTO categories (slug, name, description, sort_order)
+                    VALUES (?,?,?,COALESCE((SELECT MAX(sort_order)+1 FROM categories),0))""",
+                    (slug, name, request.form.get("description", "").strip()))
+                db.commit()
+                audit("category.create", "categories", None, {"name": name})
+                flash("Category added.", "success")
+        elif action == "update":
+            cid = int(request.form["cat_id"])
+            name = request.form.get("name", "").strip()
+            if name:
+                db.execute("""UPDATE categories SET name=?, description=?, sort_order=?
+                    WHERE id=?""", (name, request.form.get("description", "").strip(),
+                    int(request.form.get("sort_order", 0) or 0), cid))
+                db.commit()
+                audit("category.update", "categories", cid, {"name": name})
+                flash("Category updated.", "success")
+        elif action == "toggle":
+            cid = int(request.form["cat_id"])
+            db.execute("UPDATE categories SET is_active = 1 - is_active WHERE id=?", (cid,))
+            db.commit()
+            audit("category.toggle", "categories", cid)
+            flash("Category visibility updated.", "info")
+        elif action == "delete":
+            cid = int(request.form["cat_id"])
+            db.execute("UPDATE categories SET is_deleted=1, is_active=0 WHERE id=?", (cid,))
+            db.commit()
+            audit("category.soft_delete", "categories", cid)
+            flash("Category removed.", "info")
         return redirect(url_for("admin_categories"))
-    cats = get_db().execute("SELECT * FROM categories ORDER BY sort_order").fetchall()
+    cats = db.execute("""SELECT c.*, (SELECT COUNT(*) FROM products p
+                WHERE p.category_id=c.id AND p.is_active=1) AS product_count
+            FROM categories c WHERE COALESCE(c.is_deleted,0)=0
+            ORDER BY c.sort_order, c.id""").fetchall()
     return render_template("admin/categories.html", categories=cats)
 
 
@@ -2269,7 +3144,10 @@ def admin_orders():
     status = request.args.get("status", "").strip()
     region = request.args.get("region", "").strip()
     q = request.args.get("q", "").strip()
-    sql = "SELECT * FROM orders WHERE 1=1"; params = []
+    # Subscription orders (is_subscription=1) are managed under /admin/subscriptions,
+    # not here — this list is for product purchases only.
+    sql = "SELECT * FROM orders WHERE COALESCE(is_subscription,0)=0"
+    params = []
     if status: sql += " AND order_status=?"; params.append(status)
     if region: sql += " AND region=?"; params.append(region)
     if q: sql += " AND (order_number LIKE ? OR full_name LIKE ? OR email LIKE ?)"; params += [f"%{q}%"]*3
@@ -2287,15 +3165,27 @@ def admin_order_detail(order_id):
     if request.method == "POST":
         new_status = request.form.get("order_status")
         new_payment = request.form.get("payment_status")
-        if new_status in ("pending", "processing", "ready", "delivered", "cancelled"):
+        admin_email = (current_user() or {})["email"] if current_user() else "admin"
+        status_changed = (new_status in ("pending", "processing", "ready",
+            "out_for_delivery", "delivered", "cancelled")) and (new_status != order["order_status"])
+        payment_changed = (new_payment in ("pending", "paid", "failed", "refunded")) and (
+            new_payment != order["payment_status"])
+        if status_changed:
             db.execute("UPDATE orders SET order_status=?, updated_at=datetime('now') WHERE id=?",
                        (new_status, order_id))
+            record_order_event(order_id, new_status,
+                               note=request.form.get("status_note", "").strip() or None,
+                               actor=f"admin:{admin_email}")
             if order["user_id"]:
                 notify(order["user_id"], f"Order {order['order_number']} — {new_status}",
                        f"Your order status changed to '{new_status}'.",
                        url_for("account_order_detail", order_id=order_id))
-        if new_payment in ("pending", "paid", "failed", "refunded"):
+        if payment_changed:
             db.execute("UPDATE orders SET payment_status=? WHERE id=?", (new_payment, order_id))
+            if new_payment == "paid":
+                record_order_event(order_id, "paid", note="Marked paid by admin",
+                                   actor=f"admin:{admin_email}")
+                activate_subscription_for_order(order_id)
         db.commit()
         audit("order.update", "order", order_id,
               {"status": new_status, "payment_status": new_payment})
@@ -2303,7 +3193,11 @@ def admin_order_detail(order_id):
         return redirect(url_for("admin_order_detail", order_id=order_id))
     items = db.execute("SELECT * FROM order_items WHERE order_id=?", (order_id,)).fetchall()
     payments = db.execute("SELECT * FROM payments WHERE order_id=? ORDER BY created_at DESC", (order_id,)).fetchall()
-    return render_template("admin/order_detail.html", order=order, items=items, payments=payments)
+    timeline, last_status, cancelled = order_timeline(order_id)
+    refunds = db.execute("""SELECT * FROM refund_requests WHERE order_id=?
+        ORDER BY created_at DESC""", (order_id,)).fetchall()
+    return render_template("admin/order_detail.html", order=order, items=items,
+                           payments=payments, timeline=timeline, refunds=refunds)
 
 
 # Users
@@ -2328,10 +3222,13 @@ def admin_user_detail(uid):
     db = get_db()
     u = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     if not u: abort(404)
-    orders = db.execute("SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC", (uid,)).fetchall()
+    orders = db.execute("SELECT * FROM orders WHERE user_id=? AND COALESCE(is_subscription,0)=0 ORDER BY created_at DESC", (uid,)).fetchall()
+    subs = db.execute("""SELECT s.*, sp.name AS plan_name FROM subscriptions s
+        JOIN subscription_plans sp ON sp.id=s.plan_id
+        WHERE s.user_id=? ORDER BY s.id DESC""", (uid,)).fetchall()
     saved = db.execute("SELECT * FROM custom_smoothies WHERE user_id=? ORDER BY created_at DESC", (uid,)).fetchall()
     addresses = db.execute("SELECT * FROM addresses WHERE user_id=?", (uid,)).fetchall()
-    return render_template("admin/user_detail.html", u=u, orders=orders, saved=saved, addresses=addresses)
+    return render_template("admin/user_detail.html", u=u, orders=orders, subs=subs, saved=saved, addresses=addresses)
 
 
 @app.route("/admin/users/<int:uid>/status", methods=["POST"])
@@ -2358,13 +3255,102 @@ def admin_user_status(uid):
 @admin_required
 def admin_users_export():
     users = get_db().execute("SELECT id,email,full_name,phone,role,status,region,created_at FROM users ORDER BY created_at DESC").fetchall()
-    lines = ["id,email,full_name,phone,role,status,region,created_at"]
-    for u in users:
-        lines.append(",".join(str(x).replace(",", " ") if x is not None else "" for x in u))
-    resp = make_response("\n".join(lines))
-    resp.headers["Content-Type"] = "text/csv"
-    resp.headers["Content-Disposition"] = "attachment; filename=kcblendz-users.csv"
-    return resp
+    return _csv_response(
+        "kcblendz-users.csv",
+        ["id", "email", "full_name", "phone", "role", "status", "region", "created_at"],
+        [[u["id"], u["email"], u["full_name"] or "", u["phone"] or "",
+          u["role"], u["status"], u["region"] or "", u["created_at"]] for u in users],
+    )
+
+
+@app.route("/admin/products/export.csv")
+@admin_required
+def admin_products_export():
+    rows = get_db().execute("""SELECT p.id, p.name, p.slug, c.name AS category,
+        p.price_ngn, p.price_mur, p.price_usd, p.stock,
+        p.is_active, p.is_featured, p.is_bestseller, p.is_new,
+        p.is_available_ng, p.is_available_mu, p.is_available_global, p.created_at
+        FROM products p LEFT JOIN categories c ON c.id=p.category_id
+        ORDER BY p.id""").fetchall()
+    return _csv_response(
+        "kcblendz-products.csv",
+        ["id", "name", "slug", "category",
+         "price_ngn", "price_mur", "price_usd", "stock",
+         "is_active", "is_featured", "is_bestseller", "is_new",
+         "available_ng", "available_mu", "available_global", "created_at"],
+        [[r["id"], r["name"], r["slug"], r["category"] or "",
+          f"{r['price_ngn']:.2f}", f"{r['price_mur']:.2f}", f"{r['price_usd']:.2f}",
+          r["stock"], r["is_active"], r["is_featured"], r["is_bestseller"], r["is_new"],
+          r["is_available_ng"], r["is_available_mu"], r["is_available_global"],
+          r["created_at"]] for r in rows],
+    )
+
+
+@app.route("/admin/subscriptions/export.csv")
+@admin_required
+def admin_subscriptions_export():
+    rows = get_db().execute("""SELECT s.id, s.user_id, u.full_name, u.email,
+        sp.name AS plan, s.billing_cycle, s.region, s.currency, s.price,
+        s.status, s.started_at, s.cancelled_at, s.order_id
+        FROM subscriptions s
+        JOIN users u ON u.id=s.user_id
+        JOIN subscription_plans sp ON sp.id=s.plan_id
+        ORDER BY s.id DESC""").fetchall()
+    return _csv_response(
+        "kcblendz-subscriptions.csv",
+        ["id", "user_id", "customer", "email", "plan", "cycle",
+         "region", "currency", "price", "status", "started_at",
+         "cancelled_at", "order_id"],
+        [[r["id"], r["user_id"], r["full_name"], r["email"], r["plan"],
+          r["billing_cycle"], r["region"], r["currency"], f"{r['price']:.2f}",
+          r["status"], r["started_at"], r["cancelled_at"] or "",
+          r["order_id"] or ""] for r in rows],
+    )
+
+
+# ─── Admin: subscriptions list ──────────────────────────────────────────────
+@app.route("/admin/subscriptions")
+@admin_required
+def admin_subscriptions():
+    status = request.args.get("status", "").strip()
+    region = request.args.get("region", "").strip()
+    sql = """SELECT s.*, u.full_name, u.email, sp.name AS plan_name
+             FROM subscriptions s
+             JOIN users u ON u.id=s.user_id
+             JOIN subscription_plans sp ON sp.id=s.plan_id
+             WHERE 1=1"""
+    params = []
+    if status:
+        sql += " AND s.status=?"; params.append(status)
+    if region in ("NG", "MU", "GL"):
+        sql += " AND s.region=?"; params.append(region)
+    sql += " ORDER BY s.id DESC"
+    subs = get_db().execute(sql, params).fetchall()
+    stats = {
+        "active": get_db().execute("SELECT COUNT(*) n FROM subscriptions WHERE status='active'").fetchone()["n"],
+        "pending": get_db().execute("SELECT COUNT(*) n FROM subscriptions WHERE status='pending_payment'").fetchone()["n"],
+        "cancelled": get_db().execute("SELECT COUNT(*) n FROM subscriptions WHERE status='cancelled'").fetchone()["n"],
+    }
+    return render_template("admin/subscriptions.html", subs=subs, stats=stats,
+                           status=status, region=region)
+
+
+@app.route("/admin/subscriptions/<int:sid>/cancel", methods=["POST"])
+@admin_required
+def admin_subscription_cancel(sid):
+    db = get_db()
+    s = db.execute("SELECT * FROM subscriptions WHERE id=?", (sid,)).fetchone()
+    if not s:
+        abort(404)
+    db.execute("""UPDATE subscriptions SET status='cancelled',
+        cancelled_at=datetime('now') WHERE id=?""", (sid,))
+    db.commit()
+    audit("subscription.cancel", "subscriptions", sid)
+    notify(s["user_id"], "Subscription cancelled",
+           "An administrator cancelled your active subscription. Reach out if this was unexpected.",
+           url_for("account_dashboard"))
+    flash("Subscription cancelled.", "info")
+    return redirect(url_for("admin_subscriptions"))
 
 
 # Blogs
@@ -2550,6 +3536,24 @@ def admin_profile():
             db.commit()
             audit("admin.profile.update", "user", u["id"])
             flash("Profile details updated.", "success")
+        elif action == "avatar":
+            file = request.files.get("avatar")
+            if file and file.filename:
+                url = save_upload(file)
+                if url:
+                    db.execute("UPDATE users SET avatar_url=? WHERE id=?", (url, u["id"]))
+                    db.commit()
+                    audit("admin.profile.avatar", "user", u["id"])
+                    flash("Profile picture updated.", "success")
+                else:
+                    flash("Only PNG, JPG, GIF or WebP up to 8MB.", "error")
+            else:
+                flash("Please choose an image to upload.", "error")
+        elif action == "avatar_remove":
+            db.execute("UPDATE users SET avatar_url=NULL WHERE id=?", (u["id"],))
+            db.commit()
+            audit("admin.profile.avatar_remove", "user", u["id"])
+            flash("Profile picture removed.", "info")
         elif action == "password":
             cur = request.form.get("current_password", "")
             new = request.form.get("new_password", "")
@@ -2568,13 +3572,730 @@ def admin_profile():
                 db.commit()
                 audit("admin.profile.password", "user", u["id"])
                 flash("Password changed successfully.", "success")
+        elif action == "mfa_setup_start":
+            # Generate a fresh secret + stash it in the session until the user
+            # proves they've added it to their authenticator by entering a code.
+            secret = generate_mfa_secret()
+            session["mfa_setup_secret"] = secret
+            session.modified = True
+            return redirect(url_for("admin_profile") + "#mfa")
+        elif action == "mfa_setup_confirm":
+            secret = session.get("mfa_setup_secret")
+            code = request.form.get("code", "").strip()
+            if not secret:
+                flash("Please start MFA setup again — your session expired.", "error")
+            elif not verify_totp(secret, code):
+                flash("That code didn't match. Try the latest 6 digits from your authenticator.", "error")
+                return redirect(url_for("admin_profile") + "#mfa")
+            else:
+                db.execute("UPDATE users SET mfa_secret=?, mfa_enabled=1 WHERE id=?",
+                           (secret, u["id"]))
+                db.commit()
+                session.pop("mfa_setup_secret", None)
+                audit("admin.mfa.enable", "user", u["id"])
+                flash("MFA is on. From your next sign-in we'll ask for a code after your password.", "success")
+        elif action == "mfa_disable":
+            cur = request.form.get("current_password", "")
+            if not check_password_hash(u["password_hash"], cur):
+                flash("Current password required to disable MFA.", "error")
+            else:
+                db.execute("UPDATE users SET mfa_enabled=0, mfa_secret=NULL WHERE id=?", (u["id"],))
+                db.commit()
+                audit("admin.mfa.disable", "user", u["id"])
+                flash("MFA disabled. Your account is now protected by password only.", "info")
         return redirect(url_for("admin_profile"))
     stats = {
         "orders": db.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"],
         "products": db.execute("SELECT COUNT(*) c FROM products").fetchone()["c"],
         "users": db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"],
     }
-    return render_template("admin/profile.html", u=u, stats=stats)
+    mfa_pending_secret = session.get("mfa_setup_secret")
+    mfa_pending_uri = mfa_otpauth_uri(mfa_pending_secret, u["email"]) if mfa_pending_secret else None
+    return render_template("admin/profile.html", u=u, stats=stats,
+                           mfa_pending_secret=mfa_pending_secret,
+                           mfa_pending_uri=mfa_pending_uri)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v2 ROUTES — currency switch, tracking, AJAX cart, receipt, refunds, subs, FAQ
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/region/<region>", methods=["POST"])
+def api_set_region(region):
+    """Switch region without leaving the current page. The frontend posts here
+    via fetch() and reloads-in-place. Returns the new region + a flag the UI
+    uses to decide whether to clear the cart (true when items exist and the
+    region actually changed).
+    """
+    if region not in REGIONS:
+        return jsonify({"ok": False, "error": "invalid region"}), 400
+    cart = get_cart()
+    items_existed = bool(cart.get("items"))
+    region_changed = cart.get("region") != region
+    session["region"] = region
+    cart_clear_if_region_change()
+    session.modified = True
+    return jsonify({
+        "ok": True,
+        "region": region,
+        "currency": currency_for_region(region),
+        "symbol": REGIONS[region]["symbol"],
+        "cart_cleared": items_existed and region_changed,
+    })
+
+
+@app.route("/api/cart/add", methods=["POST"])
+@region_required
+def api_cart_add():
+    """JSON add-to-cart so the product cards can update without a page reload.
+    Mirrors /cart/add but returns the new cart count + subtotal so the navbar
+    and any sticky-cart UI can refresh.
+    """
+    region = current_region()
+    price_col = price_field_for(region)
+    avail = availability_field_for(region)
+    try:
+        pid = int(request.json.get("product_id"))
+        qty = max(1, int(request.json.get("quantity", 1)))
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"ok": False, "error": "Bad request."}), 400
+    p = get_db().execute(
+        f"SELECT * FROM products WHERE id=? AND is_active=1 AND {avail}=1", (pid,)
+    ).fetchone()
+    if not p:
+        return jsonify({"ok": False, "error": "Product not available in your store."}), 404
+    cart = get_cart()
+    cart["region"] = region
+    for item in cart["items"]:
+        if item.get("kind") == "product" and item.get("product_id") == p["id"]:
+            item["quantity"] = int(item["quantity"]) + qty
+            break
+    else:
+        cart["items"].append({
+            "kind": "product", "product_id": p["id"], "name": p["name"],
+            "image": p["image_url"], "meta": p["ingredients"] or "",
+            "unit_price": p[price_col], "quantity": qty,
+        })
+    session.modified = True
+    return jsonify({
+        "ok": True,
+        "name": p["name"],
+        "cart_count": cart_count(),
+        "subtotal": cart_subtotal(),
+        "subtotal_formatted": format_money(cart_subtotal(), region),
+    })
+
+
+@app.route("/api/admin/unread")
+@admin_required
+def api_admin_unread():
+    """Polled every ~10s by the admin top-bar so the unread badges stay live
+    without a page refresh."""
+    return jsonify(admin_unread_counts())
+
+
+@app.route("/api/promo/preview", methods=["POST"])
+@region_required
+def api_promo_preview():
+    """Lets the checkout page validate a promo code without submitting the form."""
+    code = (request.json or {}).get("code", "")
+    discount, p, err = resolve_promo_code(code, cart_subtotal(), current_region())
+    if err:
+        return jsonify({"ok": False, "error": err})
+    return jsonify({
+        "ok": True,
+        "code": p["code"], "description": p["description"],
+        "discount": discount,
+        "discount_formatted": format_money(discount, current_region()),
+        "new_total_formatted": format_money(
+            max(0.0, cart_subtotal() - discount), current_region()),
+    })
+
+
+# ─── Order tracking — customer-facing timeline + guest tracking page ──────────
+ORDER_STATUS_FLOW = [
+    ("pending",          "Order placed",     "We received your order and are awaiting payment."),
+    ("paid",             "Payment confirmed","Payment received — kitchen is being notified."),
+    ("processing",       "In the kitchen",   "Your blend is being made fresh."),
+    ("ready",            "Ready for collection / dispatch", "Order is packed."),
+    ("out_for_delivery", "On its way",       "Your driver is on the road."),
+    ("delivered",        "Delivered",        "Enjoy! Drink within 24h for peak freshness."),
+]
+
+# Subscriptions don't go through the kitchen / delivery pipeline — they
+# have their own shorter, clearer flow.
+SUBSCRIPTION_STATUS_FLOW = [
+    ("pending",   "Plan selected",      "You chose a plan — we're awaiting payment."),
+    ("paid",      "Payment confirmed",  "Payment received — your subscription is being activated."),
+    ("delivered", "Subscription active","You're all set! Manage or pause any time from your account."),
+]
+
+
+def order_timeline(order_id):
+    """Return the timeline as a list of (status, label, blurb, when, done, current)
+    tuples — suitable for direct rendering. Subscriptions use a shorter,
+    subscription-specific flow (no kitchen / delivery steps).
+    """
+    db = get_db()
+    order = db.execute("SELECT is_subscription FROM orders WHERE id=?",
+                       (order_id,)).fetchone()
+    flow = SUBSCRIPTION_STATUS_FLOW if (order and order["is_subscription"]) else ORDER_STATUS_FLOW
+
+    events = db.execute(
+        "SELECT status, created_at FROM order_status_events WHERE order_id=? ORDER BY id",
+        (order_id,)
+    ).fetchall()
+    by_status = {}
+    for e in events:
+        by_status.setdefault(e["status"], e["created_at"])
+
+    flow_codes = [c for (c, _, _) in flow]
+
+    if "cancelled" in by_status:
+        last_status = "cancelled"
+    else:
+        reached = [c for c in flow_codes if c in by_status]
+        last_status = reached[-1] if reached else flow_codes[0]
+
+    timeline = []
+    last_idx = flow_codes.index(last_status) if last_status in flow_codes else -1
+    for idx, (code, label, blurb) in enumerate(flow):
+        # A step is "done" if it's *before* the current step in the flow.
+        # This handles admin jumps that skip intermediate states gracefully —
+        # everything up to last_status is shown as completed instead of
+        # leaving gaps in the visual timeline.
+        when = by_status.get(code)
+        current = (code == last_status)
+        done = (idx < last_idx)
+        timeline.append({
+            "code": code, "label": label, "blurb": blurb,
+            "when": when, "done": done, "current": current,
+        })
+    cancelled = (last_status == "cancelled")
+    return timeline, last_status, cancelled
+
+
+@app.route("/track", methods=["GET", "POST"])
+def track_order():
+    """Public order tracking — works for guests too. Lookup by order number +
+    email or by tracking token. Token-only URLs let us include 'one-click'
+    tracking links in order confirmation emails without exposing PII.
+    """
+    db = get_db()
+    token = request.args.get("token", "").strip()
+    order = None
+    error = None
+
+    if token:
+        order = db.execute("SELECT * FROM orders WHERE tracking_token=?", (token,)).fetchone()
+        if not order:
+            error = "We couldn't find an order with that tracking link."
+
+    if request.method == "POST":
+        order_number = request.form.get("order_number", "").strip().upper()
+        email = request.form.get("email", "").strip().lower()
+        if not order_number or not valid_email(email):
+            error = "Enter both your order number and the email used at checkout."
+        else:
+            order = db.execute(
+                "SELECT * FROM orders WHERE order_number=? AND lower(email)=?",
+                (order_number, email)
+            ).fetchone()
+            if not order:
+                error = "No order matches that combination. Double-check the order number and email."
+
+    timeline = items = []
+    last_status = None
+    cancelled = False
+    if order:
+        timeline, last_status, cancelled = order_timeline(order["id"])
+        items = db.execute("SELECT * FROM order_items WHERE order_id=?", (order["id"],)).fetchall()
+
+    return render_template("public/track.html",
+                           order=order, items=items, timeline=timeline,
+                           last_status=last_status, cancelled=cancelled, error=error)
+
+
+@app.route("/order/<int:order_id>/receipt")
+def order_receipt(order_id):
+    """Printable receipt. Open in any view that has access (the customer, or
+    via tracking token, or any admin)."""
+    db = get_db()
+    order = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        abort(404)
+    token = request.args.get("token", "")
+    u = current_user()
+    allowed = (
+        (u and (u["role"] == "admin" or order["user_id"] == u["id"])) or
+        (token and order["tracking_token"] and
+         hmac.compare_digest(token, order["tracking_token"]))
+    )
+    if not allowed:
+        abort(403)
+    items = db.execute("SELECT * FROM order_items WHERE order_id=?", (order_id,)).fetchall()
+    return render_template("public/receipt.html", order=order, items=items)
+
+
+# ─── Refund requests ─────────────────────────────────────────────────────────
+@app.route("/order/<int:order_id>/refund", methods=["GET", "POST"])
+def request_refund(order_id):
+    """Customer-facing refund request. Requires either ownership (logged-in)
+    or the tracking token (guests). All requests land in the admin queue."""
+    db = get_db()
+    order = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        abort(404)
+    token = request.args.get("token", "") or request.form.get("token", "")
+    u = current_user()
+    is_owner = u and order["user_id"] == u["id"]
+    via_token = token and order["tracking_token"] and \
+                hmac.compare_digest(token, order["tracking_token"])
+    if not (is_owner or via_token):
+        abort(403)
+
+    existing = db.execute("""SELECT * FROM refund_requests
+        WHERE order_id=? ORDER BY id DESC LIMIT 1""", (order_id,)).fetchone()
+
+    if request.method == "POST":
+        reason = request.form.get("reason", "").strip()
+        details = request.form.get("details", "").strip()
+        if not reason:
+            flash("Please choose a reason for the refund.", "error")
+            return redirect(request.url)
+        if existing and existing["status"] in ("pending", "approved"):
+            flash("A refund request is already open for this order.", "info")
+        else:
+            db.execute("""INSERT INTO refund_requests (order_id, user_id, reason, details)
+                VALUES (?,?,?,?)""", (order_id, u["id"] if u else None, reason, details))
+            db.commit()
+            notify_admins(f"Refund requested · {order['order_number']}",
+                          reason, url_for("admin_order_detail", order_id=order_id))
+            audit("refund.request", "order", order_id, {"reason": reason})
+            flash("Your refund request has been submitted. We'll respond within 12 hours.", "success")
+        return redirect(url_for("track_order", token=order["tracking_token"]) if via_token
+                        else url_for("account_order_detail", order_id=order_id))
+
+    return render_template("public/refund_request.html",
+                           order=order, existing=existing, token=token)
+
+
+# ─── Subscription plans ──────────────────────────────────────────────────────
+@app.route("/subscribe")
+def subscribe_index():
+    region = current_region() or "MU"
+    plans = get_db().execute("""SELECT * FROM subscription_plans
+        WHERE is_active=1 ORDER BY sort_order""").fetchall()
+    return render_template("public/subscribe.html", plans=plans, region=region)
+
+
+@app.route("/subscribe/<slug>", methods=["GET", "POST"])
+@login_required
+def subscribe_plan(slug):
+    db = get_db()
+    plan = db.execute("SELECT * FROM subscription_plans WHERE slug=? AND is_active=1",
+                      (slug,)).fetchone()
+    if not plan:
+        abort(404)
+    region = current_region() or "MU"
+    cycle = request.values.get("cycle", "monthly")
+    if cycle not in ("monthly", "yearly"):
+        cycle = "monthly"
+    price_col = {"NG": "price_ngn", "MU": "price_mur", "GL": "price_usd"}[region]
+    price = plan[f"{price_col}_{cycle}"]
+
+    if request.method == "POST":
+        u = current_user()
+        payment_method = request.form.get("payment_method", "card")
+        if payment_method not in ("card", "paypal", "bank_transfer"):
+            flash("Choose a valid payment method.", "error")
+            return redirect(url_for("subscribe_plan", slug=slug, cycle=cycle))
+
+        currency = currency_for_region(region)
+        # Create the subscription in a pending state — only activated once paid.
+        db.execute("""INSERT INTO subscriptions (user_id, plan_id, billing_cycle, region,
+            currency, price, status) VALUES (?,?,?,?,?,?, 'pending_payment')""",
+            (u["id"], plan["id"], cycle, region, currency, price))
+        sub_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+        # Create a payable order so the customer pays through the SAME flow
+        # (card / PayPal / bank transfer) before the subscription is admitted.
+        tracking_token = generate_tracking_token()
+        order_number = f"KCB-SUB-{datetime.now().strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+        db.execute("""INSERT INTO orders (order_number, user_id, guest_email, full_name,
+            email, phone, region, currency, subtotal, delivery_fee, total,
+            fulfillment_type, notes, payment_method, tracking_token,
+            is_subscription, subscription_id)
+            VALUES (?,?,?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?)""", (
+            order_number, u["id"], None, u["full_name"],
+            u["email"], u["phone"] or "—", region, currency,
+            price, 0.0, price, "subscription",
+            f"{plan['name']} subscription · {cycle}", payment_method, tracking_token,
+            1, sub_id,
+        ))
+        order_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        db.execute("UPDATE subscriptions SET order_id=? WHERE id=?", (order_id, sub_id))
+        db.execute("""INSERT INTO order_items (order_id, item_name, item_meta,
+            unit_price, quantity, line_total) VALUES (?,?,?,?,?,?)""", (
+            order_id, f"{plan['name']} plan ({cycle})",
+            plan["tagline"] or "", price, 1, price))
+        db.commit()
+        record_order_event(order_id, "pending",
+                           note="Subscription order placed", actor="customer")
+        audit("subscription.pending", "subscription_plans", plan["id"],
+              {"cycle": cycle, "price": price, "order_id": order_id})
+        return redirect(url_for("payment", order_id=order_id))
+
+    return render_template("public/subscribe_confirm.html",
+                           plan=plan, region=region, cycle=cycle, price=price)
+
+
+# ─── Override the static FAQ page with DB-driven, categorised one ────────────
+# (kept @app.route("/faq") defined earlier — we replace its handler below
+# but Flask binds endpoints to view funcs, so we just redefine the function.)
+@app.route("/faq", endpoint="faq_v2")
+def faq_v2():
+    """Categorised FAQ — Customers / Our Team / Insights."""
+    rows = get_db().execute("""SELECT * FROM faqs WHERE is_published=1
+        ORDER BY category, sort_order""").fetchall()
+    by_cat = {"customers": [], "team": [], "insights": []}
+    for r in rows:
+        by_cat.setdefault(r["category"], []).append(r)
+    return render_template("public/faq.html", faq_groups=by_cat)
+
+
+# Make Flask use the v2 view for /faq even though faq() was defined earlier.
+# Same URL, new function: we point the existing endpoint's view_func at faq_v2.
+app.view_functions["faq"] = faq_v2
+
+
+# ─── Admin: delete category (with safe product re-assignment) ────────────────
+@app.route("/admin/categories/<int:cid>/delete", methods=["POST"])
+@admin_required
+def admin_category_delete(cid):
+    db = get_db()
+    cat = db.execute("SELECT * FROM categories WHERE id=?", (cid,)).fetchone()
+    if not cat:
+        abort(404)
+    # Don't actually drop the row — soft-delete so old product links keep
+    # working in historical orders. Detach products so they're not orphaned.
+    db.execute("UPDATE products SET category_id=NULL WHERE category_id=?", (cid,))
+    db.execute("UPDATE categories SET is_deleted=1, is_active=0 WHERE id=?", (cid,))
+    db.commit()
+    audit("category.delete", "category", cid, {"name": cat["name"]})
+    flash(f"Category “{cat['name']}” deleted. Products kept and reassigned to Uncategorised.", "success")
+    return redirect(url_for("admin_categories"))
+
+
+# ─── Admin: promo codes ──────────────────────────────────────────────────────
+@app.route("/admin/promo", methods=["GET", "POST"])
+@admin_required
+def admin_promo():
+    db = get_db()
+    if request.method == "POST":
+        code = request.form.get("code", "").strip().upper()
+        if not code:
+            flash("Code is required.", "error"); return redirect(url_for("admin_promo"))
+        try:
+            db.execute("""INSERT INTO promo_codes (code, description, discount_type,
+                discount_value, min_subtotal, region, ends_at, max_uses, is_active)
+                VALUES (?,?,?,?,?,?,?,?,1)""", (
+                code,
+                request.form.get("description", "").strip(),
+                request.form.get("discount_type", "percent"),
+                float(request.form.get("discount_value") or 0),
+                float(request.form.get("min_subtotal") or 0),
+                request.form.get("region") or None,
+                request.form.get("ends_at") or None,
+                int(request.form["max_uses"]) if request.form.get("max_uses") else None,
+            ))
+            db.commit()
+            audit("promo.create", "promo_codes", None, {"code": code})
+            flash(f"Promo code {code} created.", "success")
+        except sqlite3.IntegrityError:
+            flash("That code already exists.", "error")
+        return redirect(url_for("admin_promo"))
+    promos = db.execute("SELECT * FROM promo_codes ORDER BY id DESC").fetchall()
+    return render_template("admin/promo.html", promos=promos)
+
+
+@app.route("/admin/promo/<int:pid>/toggle", methods=["POST"])
+@admin_required
+def admin_promo_toggle(pid):
+    db = get_db()
+    db.execute("UPDATE promo_codes SET is_active = 1 - is_active WHERE id=?", (pid,))
+    db.commit()
+    audit("promo.toggle", "promo_codes", pid)
+    flash("Promo code updated.", "info")
+    return redirect(url_for("admin_promo"))
+
+
+@app.route("/admin/promo/<int:pid>/edit", methods=["POST"])
+@admin_required
+def admin_promo_edit(pid):
+    db = get_db()
+    if not db.execute("SELECT 1 FROM promo_codes WHERE id=?", (pid,)).fetchone():
+        abort(404)
+    f = request.form
+    db.execute("""UPDATE promo_codes SET code=?, description=?, discount_type=?,
+        discount_value=?, min_subtotal=?, region=?, ends_at=?, max_uses=?
+        WHERE id=?""", (
+        f.get("code", "").strip().upper(),
+        f.get("description", "").strip(),
+        f.get("discount_type", "percent"),
+        float(f.get("discount_value") or 0),
+        float(f.get("min_subtotal") or 0),
+        f.get("region") or None,
+        f.get("ends_at") or None,
+        int(f["max_uses"]) if f.get("max_uses") else None,
+        pid,
+    ))
+    db.commit()
+    audit("promo.update", "promo_codes", pid)
+    flash("Promo code updated.", "success")
+    return redirect(url_for("admin_promo"))
+
+
+@app.route("/admin/promo/<int:pid>/delete", methods=["POST"])
+@admin_required
+def admin_promo_delete(pid):
+    db = get_db()
+    db.execute("DELETE FROM promo_codes WHERE id=?", (pid,))
+    db.commit()
+    audit("promo.delete", "promo_codes", pid)
+    flash("Promo code removed.", "info")
+    return redirect(url_for("admin_promo"))
+
+
+# ─── Admin: refund queue ─────────────────────────────────────────────────────
+@app.route("/admin/refunds")
+@admin_required
+def admin_refunds():
+    rows = get_db().execute("""SELECT r.*, o.order_number, o.total, o.region, o.currency,
+        o.full_name AS customer_name
+        FROM refund_requests r JOIN orders o ON o.id=r.order_id
+        ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at DESC""").fetchall()
+    return render_template("admin/refunds.html", refunds=rows)
+
+
+@app.route("/admin/refunds/<int:rid>/resolve", methods=["POST"])
+@admin_required
+def admin_refund_resolve(rid):
+    action = request.form.get("action")
+    response = request.form.get("response", "").strip()
+    if action not in ("approve", "reject", "mark_refunded"):
+        abort(400)
+    db = get_db()
+    r = db.execute("SELECT * FROM refund_requests WHERE id=?", (rid,)).fetchone()
+    if not r:
+        abort(404)
+    new_status = {"approve": "approved", "reject": "rejected",
+                  "mark_refunded": "refunded"}[action]
+    db.execute("""UPDATE refund_requests SET status=?, admin_response=?, resolved_at=datetime('now')
+        WHERE id=?""", (new_status, response, rid))
+    if new_status == "refunded":
+        db.execute("UPDATE orders SET payment_status='refunded' WHERE id=?", (r["order_id"],))
+        record_order_event(r["order_id"], "cancelled",
+                           note="Refund issued", actor="admin")
+    db.commit()
+    # Notify the customer
+    if r["user_id"]:
+        order = db.execute("SELECT order_number FROM orders WHERE id=?", (r["order_id"],)).fetchone()
+        notify(r["user_id"], f"Refund request {new_status} · {order['order_number']}",
+               response, url_for("account_order_detail", order_id=r["order_id"]))
+    audit(f"refund.{new_status}", "refund_requests", rid)
+    flash(f"Refund {new_status}.", "success")
+    return redirect(url_for("admin_refunds"))
+
+
+# ─── Admin: FAQ management ───────────────────────────────────────────────────
+@app.route("/admin/faqs", methods=["GET", "POST"])
+@admin_required
+def admin_faqs():
+    db = get_db()
+    if request.method == "POST":
+        action = request.form.get("action", "create")
+        if action == "create":
+            cat = request.form.get("category", "customers")
+            q = request.form.get("question", "").strip()
+            a = request.form.get("answer", "").strip()
+            if q and a:
+                db.execute("""INSERT INTO faqs (category, question, answer, sort_order)
+                    VALUES (?,?,?,COALESCE((SELECT MAX(sort_order)+1 FROM faqs),0))""",
+                    (cat, q, a))
+                db.commit()
+                audit("faq.create", "faqs", None, {"q": q})
+                flash("FAQ added.", "success")
+        elif action == "update":
+            fid = int(request.form["faq_id"])
+            q = request.form.get("question", "").strip()
+            a = request.form.get("answer", "").strip()
+            if q and a:
+                db.execute("""UPDATE faqs SET category=?, question=?, answer=?, sort_order=?
+                    WHERE id=?""", (request.form.get("category", "customers"), q, a,
+                    int(request.form.get("sort_order", 0) or 0), fid))
+                db.commit()
+                audit("faq.update", "faqs", fid)
+                flash("FAQ updated.", "success")
+        elif action == "toggle":
+            fid = int(request.form["faq_id"])
+            db.execute("UPDATE faqs SET is_published = 1 - is_published WHERE id=?", (fid,))
+            db.commit()
+            audit("faq.toggle", "faqs", fid)
+            flash("FAQ visibility updated.", "info")
+        elif action == "delete":
+            db.execute("DELETE FROM faqs WHERE id=?", (int(request.form["faq_id"]),))
+            db.commit()
+            audit("faq.delete", "faqs", None)
+            flash("FAQ removed.", "info")
+        return redirect(url_for("admin_faqs"))
+    faqs = db.execute("SELECT * FROM faqs ORDER BY category, sort_order").fetchall()
+    return render_template("admin/faqs.html", faqs=faqs)
+
+
+# ─── Admin: order CSV export (the one missing from the orders page) ──────────
+@app.route("/admin/orders/export.csv")
+@admin_required
+def admin_orders_export():
+    import csv, io
+    db = get_db()
+    rows = db.execute("""SELECT order_number, created_at, region, currency, full_name, email, phone,
+        order_status, payment_status, payment_method, subtotal, delivery_fee, discount_amount, total
+        FROM orders WHERE COALESCE(is_subscription,0)=0
+        ORDER BY created_at DESC""").fetchall()
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL)
+    w.writerow([d[0] for d in db.execute("SELECT order_number, created_at, region, currency, "
+        "full_name, email, phone, order_status, payment_status, payment_method, subtotal, "
+        "delivery_fee, discount_amount, total FROM orders LIMIT 0").description])
+    for r in rows:
+        w.writerow(list(r))
+    resp = make_response(buf.getvalue())
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = "attachment; filename=kcblendz-orders.csv"
+    return resp
+
+
+# ─── Admin: report export (split by currency this time) ──────────────────────
+def _csv_response(filename, header, rows):
+    """Build a downloadable CSV response from a header + iterable of rows."""
+    import csv, io
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL)
+    w.writerow(header)
+    for r in rows:
+        w.writerow(list(r))
+    resp = make_response(buf.getvalue())
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return resp
+
+
+@app.route("/admin/reports/export.csv")
+@admin_required
+def admin_reports_export():
+    """Export any report section. ?type=daily|monthly|region|products|growth|all
+    Defaults to the per-region daily revenue export (back-compatible)."""
+    db = get_db()
+    kind = request.args.get("type", "region").strip().lower()
+
+    if kind == "daily":
+        rows = db.execute("""SELECT date(created_at) d, region, currency,
+            COUNT(*) n, COALESCE(SUM(total),0) v
+            FROM orders WHERE payment_status='paid'
+              AND date(created_at) >= date('now','-30 days')
+            GROUP BY d, region ORDER BY d DESC, region""").fetchall()
+        return _csv_response("kcblendz-daily-revenue.csv",
+            ["date", "region", "currency", "orders", "revenue"],
+            [[r["d"], r["region"], r["currency"], r["n"], f"{r['v']:.2f}"] for r in rows])
+
+    if kind == "monthly":
+        rows = db.execute("""SELECT strftime('%Y-%m', created_at) m, region, currency,
+            COUNT(*) n, COALESCE(SUM(total),0) v
+            FROM orders WHERE payment_status='paid'
+            GROUP BY m, region ORDER BY m DESC, region""").fetchall()
+        return _csv_response("kcblendz-monthly-summary.csv",
+            ["month", "region", "currency", "orders", "revenue"],
+            [[r["m"], r["region"], r["currency"], r["n"], f"{r['v']:.2f}"] for r in rows])
+
+    if kind == "products":
+        rows = db.execute("""SELECT oi.item_name, o.region,
+            SUM(oi.quantity) qty, SUM(oi.line_total) revenue
+            FROM order_items oi JOIN orders o ON o.id=oi.order_id
+            WHERE o.payment_status='paid'
+            GROUP BY oi.item_name, o.region
+            ORDER BY qty DESC""").fetchall()
+        return _csv_response("kcblendz-top-products.csv",
+            ["product", "region", "quantity_sold", "revenue"],
+            [[r["item_name"], r["region"], r["qty"], f"{r['revenue']:.2f}"] for r in rows])
+
+    if kind == "growth":
+        rows = db.execute("""SELECT date(created_at) d, COUNT(*) n
+            FROM users WHERE role='customer'
+              AND date(created_at) >= date('now','-90 days')
+            GROUP BY d ORDER BY d DESC""").fetchall()
+        return _csv_response("kcblendz-customer-growth.csv",
+            ["date", "new_customers"],
+            [[r["d"], r["n"]] for r in rows])
+
+    if kind == "all":
+        # One combined workbook-style CSV with section headers.
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf, quoting=csv.QUOTE_ALL)
+
+        w.writerow(["=== REVENUE BY REGION ==="])
+        w.writerow(["region", "orders", "revenue"])
+        for r in db.execute("""SELECT region, COUNT(*) n, COALESCE(SUM(total),0) v
+            FROM orders WHERE payment_status='paid' GROUP BY region""").fetchall():
+            w.writerow([r["region"], r["n"], f"{r['v']:.2f}"])
+
+        w.writerow([])
+        w.writerow(["=== DAILY REVENUE (30d) ==="])
+        w.writerow(["date", "region", "currency", "orders", "revenue"])
+        for r in db.execute("""SELECT date(created_at) d, region, currency,
+            COUNT(*) n, COALESCE(SUM(total),0) v FROM orders
+            WHERE payment_status='paid' AND date(created_at)>=date('now','-30 days')
+            GROUP BY d, region ORDER BY d DESC""").fetchall():
+            w.writerow([r["d"], r["region"], r["currency"], r["n"], f"{r['v']:.2f}"])
+
+        w.writerow([])
+        w.writerow(["=== MONTHLY SUMMARY ==="])
+        w.writerow(["month", "region", "currency", "orders", "revenue"])
+        for r in db.execute("""SELECT strftime('%Y-%m', created_at) m, region, currency,
+            COUNT(*) n, COALESCE(SUM(total),0) v FROM orders
+            WHERE payment_status='paid' GROUP BY m, region ORDER BY m DESC""").fetchall():
+            w.writerow([r["m"], r["region"], r["currency"], r["n"], f"{r['v']:.2f}"])
+
+        w.writerow([])
+        w.writerow(["=== TOP PRODUCTS ==="])
+        w.writerow(["product", "region", "quantity_sold", "revenue"])
+        for r in db.execute("""SELECT oi.item_name, o.region, SUM(oi.quantity) qty,
+            SUM(oi.line_total) revenue FROM order_items oi JOIN orders o ON o.id=oi.order_id
+            WHERE o.payment_status='paid' GROUP BY oi.item_name, o.region
+            ORDER BY qty DESC""").fetchall():
+            w.writerow([r["item_name"], r["region"], r["qty"], f"{r['revenue']:.2f}"])
+
+        w.writerow([])
+        w.writerow(["=== CUSTOMER GROWTH (90d) ==="])
+        w.writerow(["date", "new_customers"])
+        for r in db.execute("""SELECT date(created_at) d, COUNT(*) n FROM users
+            WHERE role='customer' AND date(created_at)>=date('now','-90 days')
+            GROUP BY d ORDER BY d DESC""").fetchall():
+            w.writerow([r["d"], r["n"]])
+
+        resp = make_response(buf.getvalue())
+        resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+        resp.headers["Content-Disposition"] = "attachment; filename=kcblendz-full-report.csv"
+        return resp
+
+    # Default — per-region revenue (back-compatible)
+    rows = db.execute("""SELECT date(created_at) d, region, currency,
+        COUNT(*) n, COALESCE(SUM(total),0) v
+        FROM orders WHERE payment_status='paid'
+        GROUP BY d, region ORDER BY d DESC, region""").fetchall()
+    return _csv_response("kcblendz-revenue.csv",
+        ["date", "region", "currency", "orders", "revenue"],
+        [[r["d"], r["region"], r["currency"], r["n"], f"{r['v']:.2f}"] for r in rows])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2634,7 +4355,9 @@ def cli_init_db():
 
 
 def _ensure_db():
-    """Initialise the database if it does not yet exist.
+    """Initialise the database if it does not yet exist, and always run
+    additive migrations on top of an existing DB so deploys can roll forward
+    without manual SQL.
 
     Runs on import so production WSGI servers (gunicorn on Railway/Render/etc.)
     have a ready database — fixes the 'database missing on startup → 500'.
@@ -2650,6 +4373,13 @@ def _ensure_db():
                 need_init = True
         if need_init:
             init_db()
+        else:
+            # DB already exists — apply additive schema (new tables) and column migrations.
+            conn = sqlite3.connect(DB_PATH)
+            conn.executescript(SCHEMA_SQL)
+            migrate(conn)
+            conn.close()
+            _seed_v2_data()
     except Exception as exc:  # never let import crash the worker
         import logging
         logging.getLogger(__name__).warning("DB auto-init skipped: %s", exc)

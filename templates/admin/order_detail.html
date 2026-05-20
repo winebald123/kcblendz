@@ -12,6 +12,58 @@
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
   <!-- Main -->
   <div class="lg:col-span-2 space-y-5">
+    <!-- Timeline -->
+    {% if timeline %}
+    <div class="bg-white rounded-2xl border-2 border-black p-5">
+      <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Tracking timeline</h2>
+      <ol class="space-y-0">
+        {% for step in timeline %}
+        <li class="flex gap-4 py-2.5 {% if step.current %}-mx-2 px-2 rounded-xl bg-[var(--kc-yellow)]/30 border-2 border-[var(--kc-yellow)]{% endif %}">
+          <span class="w-6 h-6 rounded-full inline-flex items-center justify-center mt-0.5 shrink-0 font-bold text-[10px]
+                       {% if step.done %}bg-[var(--kc-green)] text-white
+                       {% elif step.current %}bg-[var(--kc-orange)] text-white animate-pulse
+                       {% else %}bg-gray-200 text-gray-500{% endif %}">
+            {% if step.done %}✓{% else %}{{ loop.index }}{% endif %}
+          </span>
+          <div class="flex-1 text-sm">
+            <div class="flex items-center justify-between gap-3">
+              <p class="font-extrabold {% if not step.done and not step.current %}text-gray-400{% endif %}">{{ step.label }}</p>
+              {% if step.when %}<p class="text-xs text-gray-500 font-mono">{{ step.when[:16] }}</p>{% endif %}
+            </div>
+            <p class="text-xs text-gray-600 {% if not step.done and not step.current %}text-gray-400{% endif %}">{{ step.blurb }}</p>
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+    </div>
+    {% endif %}
+
+    <!-- Refund requests -->
+    {% if refunds %}
+    <div class="bg-white rounded-2xl border-2 border-black p-5">
+      <h2 class="text-base font-extrabold uppercase tracking-wider mb-3">Refund requests ({{ refunds|length }})</h2>
+      <ul class="space-y-3">
+        {% for r in refunds %}
+        <li class="border-2 border-black/15 rounded-xl p-3 {% if r['status'] == 'pending' %}bg-amber-50 border-amber-300{% endif %}">
+          <div class="flex items-center justify-between gap-3 mb-1">
+            <span class="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full
+              {% if r['status'] == 'pending' %}bg-amber-100 text-amber-800
+              {% elif r['status'] == 'approved' %}bg-sky-100 text-sky-800
+              {% elif r['status'] == 'refunded' %}bg-emerald-100 text-emerald-800
+              {% elif r['status'] == 'rejected' %}bg-rose-100 text-rose-800
+              {% endif %}">{{ r['status'] }}</span>
+            <span class="text-xs text-gray-500 font-mono">{{ r['created_at'][:16] }}</span>
+          </div>
+          <p class="text-sm"><span class="font-bold">Reason:</span> {{ r['reason'] }}</p>
+          {% if r['details'] %}<p class="text-xs text-gray-600 mt-1">{{ r['details'] }}</p>{% endif %}
+          {% if r['admin_response'] %}<p class="text-xs italic text-gray-600 mt-2">Reply: {{ r['admin_response'] }}</p>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      <a href="{{ url_for('admin_refunds') }}" class="text-xs font-bold text-[var(--fuchsia)] hover:underline mt-3 inline-block">Manage in refund queue →</a>
+    </div>
+    {% endif %}
+
     <!-- Items -->
     <div class="bg-white rounded-2xl border-2 border-black p-5">
       <h2 class="text-base font-extrabold uppercase tracking-wider mb-4">Items</h2>
@@ -32,9 +84,18 @@
       </ul>
       <dl class="mt-4 pt-4 border-t-2 border-dashed border-gray-300 space-y-1 text-sm">
         <div class="flex justify-between"><dt class="text-gray-600">Subtotal</dt><dd class="font-bold">{{ format_money(order['subtotal'], order['region']) }}</dd></div>
+        {% if order['discount_amount'] and order['discount_amount'] > 0 %}
+          <div class="flex justify-between text-emerald-700">
+            <dt>Discount{% if order['promo_code'] %} · {{ order['promo_code'] }}{% endif %}</dt>
+            <dd class="font-bold">− {{ format_money(order['discount_amount'], order['region']) }}</dd>
+          </div>
+        {% endif %}
         {% if order['delivery_fee'] %}<div class="flex justify-between"><dt class="text-gray-600">Delivery</dt><dd class="font-bold">{{ format_money(order['delivery_fee'], order['region']) }}</dd></div>{% endif %}
         <div class="flex justify-between text-base pt-1"><dt class="font-extrabold uppercase tracking-wider">Total</dt><dd class="font-extrabold">{{ format_money(order['total'], order['region']) }}</dd></div>
       </dl>
+      <div class="mt-3 pt-3 border-t border-dashed border-gray-200 flex gap-2">
+        <a href="{{ url_for('order_receipt', order_id=order['id']) }}" target="_blank" class="btn-outline-dark rounded-full px-3 py-1.5 text-xs font-extrabold uppercase tracking-wider">🖨 Receipt</a>
+      </div>
     </div>
 
     <!-- Payments -->
@@ -50,7 +111,7 @@
           {% for pay in payments %}
             <tr class="border-b border-dashed border-gray-200">
               <td class="py-2 text-xs">{{ pay['created_at'][:16] }}</td>
-              <td class="py-2">{{ pay['method'] }} · <span class="text-gray-500 text-xs">{{ pay['gateway'] }}</span></td>
+              <td class="py-2">{{ pay['method']|replace('_',' ')|title }} · <span class="text-gray-500 text-xs">{% if pay['gateway'] == 'card_gateway' %}Card gateway{% elif pay['gateway'] == 'paystack' %}Paystack{% elif pay['gateway'] == 'paypal' %}PayPal{% elif pay['gateway'] == 'manual' %}Bank transfer{% else %}{{ pay['gateway']|title }}{% endif %}</span></td>
               <td class="py-2 font-mono text-xs">{{ pay['reference'] }}</td>
               <td class="py-2 text-right font-bold">{{ format_money(pay['amount'], order['region']) }}</td>
               <td class="py-2 text-center"><span class="badge-square {% if pay['status']=='success' %}bg-[var(--lime)] text-black{% else %}bg-[var(--yellow)] text-black{% endif %}">{{ pay['status'].replace('_',' ') }}</span></td>
@@ -83,8 +144,8 @@
       <div>
         <label class="label">Order status</label>
         <select name="order_status" class="input w-full">
-          {% for s in ['pending','processing','ready','delivered','cancelled'] %}
-            <option value="{{ s }}" {% if order['order_status']==s %}selected{% endif %}>{{ s|capitalize }}</option>
+          {% for s in ['pending','processing','ready','out_for_delivery','delivered','cancelled'] %}
+            <option value="{{ s }}" {% if order['order_status']==s %}selected{% endif %}>{{ s|replace('_',' ')|capitalize }}</option>
           {% endfor %}
         </select>
       </div>
@@ -95,6 +156,11 @@
             <option value="{{ s }}" {% if order['payment_status']==s %}selected{% endif %}>{{ s|capitalize }}</option>
           {% endfor %}
         </select>
+      </div>
+      <div>
+        <label class="label">Note (saved to timeline)</label>
+        <input name="status_note" placeholder="e.g. left with concierge"
+               class="input w-full text-sm">
       </div>
       <button type="submit" class="btn-fuchsia rounded-full w-full py-2.5 font-extrabold uppercase tracking-wider text-sm border-2 border-black shadow-[4px_4px_0_#000]">
         Save changes
